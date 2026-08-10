@@ -24,7 +24,8 @@
     "@openwork/testkit": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "zod": "4.3.6"
   },
   "packageManager": "pnpm@11.4.0"
 }

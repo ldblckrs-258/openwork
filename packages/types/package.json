@@ -34,6 +34,11 @@
       "development": "./src/automations.ts",
       "default": "./src/automations.ts"
     },
+    "./roleplay": {
+      "types": "./src/roleplay.ts",
+      "development": "./src/roleplay.ts",
+      "default": "./src/roleplay.ts"
+    },
     "./den/desktop-app-restrictions": {
       "types": "./src/den/desktop-app-restrictions.ts",
       "development": "./src/den/desktop-app-restrictions.ts",
