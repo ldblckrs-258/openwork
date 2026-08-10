@@ -51,6 +51,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opencode-ai/sdk": "^1.17.11",
     "@openwork/enterprise-mcp-client": "workspace:*",
+    "@openwork/types": "workspace:*",
     "better-sqlite3": "^13.0.2",
     "drizzle-orm": "^0.45.2",
     "jsonc-parser": "^3.2.1",
@@ -62,7 +63,6 @@
   "devDependencies": {
     "@openwork/headless-threads": "workspace:*",
     "@openwork/paths": "workspace:*",
-    "@openwork/types": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "@types/minimatch": "^5.1.2",
     "@types/node": "^22.10.2",
