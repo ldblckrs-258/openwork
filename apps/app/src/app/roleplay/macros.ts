@@ -36,3 +36,19 @@ export function splitExampleMessages(mesExample: string): string[] {
     .map((block) => block.trim())
     .filter((block) => block !== "");
 }
+
+/**
+ * Rebuild `mes_example` from discrete exchanges.
+ *
+ * The editor presents example dialogue as a list of blocks rather than one
+ * textarea, so the `<START>` separators are written here instead of typed by
+ * hand. Typed separators are the usual source of malformed example dialogue,
+ * which fails silently: the model just sees one run-on exchange.
+ */
+export function joinExampleMessages(blocks: string[]): string {
+  const filled = blocks.map((block) => block.trim()).filter((block) => block !== "");
+  if (filled.length === 0) return "";
+  return filled.map((block) => `${EXAMPLE_SEPARATOR_TAG}\n${block}`).join("\n");
+}
+
+const EXAMPLE_SEPARATOR_TAG = "<START>";
