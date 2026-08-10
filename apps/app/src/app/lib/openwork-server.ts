@@ -6,6 +6,7 @@ import {
   type AgentContextDiagnosticsRequest,
 } from "@openwork/types/agent-context-diagnostics";
 import { normalizeBaseUrl } from "@openwork/types/url";
+import type { RoleplayCharacterRecord, RoleplayPersonaRecord } from "@openwork/types/roleplay";
 import {
   AGENT_CONTEXT_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
   requestAgentContextDiagnosticsPayload,
@@ -1513,6 +1514,48 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         { token, hostToken, timeoutMs: timeouts.sessionRead },
       );
     },
+    listRoleplayCharacters: (workspaceId: string) =>
+      requestJson<{ characters: RoleplayCharacterRecord[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/characters`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    getRoleplayCharacter: (workspaceId: string, characterId: string) =>
+      requestJson<{ character: RoleplayCharacterRecord }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/characters/${encodeURIComponent(characterId)}`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplayCharacter: (workspaceId: string, character: RoleplayCharacterRecord) =>
+      requestJson<{ character: RoleplayCharacterRecord }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/characters/${encodeURIComponent(character.id)}`,
+        { token, hostToken, method: "PUT", body: { character }, timeoutMs: timeouts.config },
+      ),
+    deleteRoleplayCharacter: (workspaceId: string, characterId: string) =>
+      requestJson<{ deleted: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/characters/${encodeURIComponent(characterId)}`,
+        { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
+      ),
+    listRoleplayPersonas: (workspaceId: string) =>
+      requestJson<{ personas: RoleplayPersonaRecord[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/personas`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplayPersona: (workspaceId: string, persona: RoleplayPersonaRecord) =>
+      requestJson<{ persona: RoleplayPersonaRecord }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/personas/${encodeURIComponent(persona.id)}`,
+        { token, hostToken, method: "PUT", body: { persona }, timeoutMs: timeouts.config },
+      ),
+    deleteRoleplayPersona: (workspaceId: string, personaId: string) =>
+      requestJson<{ deleted: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/personas/${encodeURIComponent(personaId)}`,
+        { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
+      ),
     getSessionGroups: (workspaceId: string) =>
       requestJson<{ state: OpenworkSessionGroupState; updatedAt: number | null }>(
         baseUrl,
