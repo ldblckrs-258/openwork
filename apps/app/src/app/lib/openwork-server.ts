@@ -7,11 +7,10 @@ import {
 } from "@openwork/types/agent-context-diagnostics";
 import { normalizeBaseUrl } from "@openwork/types/url";
 import type {
-  RoleplayBlock,
   RoleplayCharacterRecord,
-  RoleplayMessageBlocksRecord,
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
+  RoleplayTurnRecord,
 } from "@openwork/types/roleplay";
 import {
   AGENT_CONTEXT_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
@@ -1580,17 +1579,17 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}`,
         { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
       ),
-    getRoleplayMessageBlocks: (workspaceId: string, messageId: string) =>
-      requestJson<{ blocks: RoleplayBlock[] | null }>(
+    listRoleplayTurns: (workspaceId: string, sessionId: string) =>
+      requestJson<{ turns: RoleplayTurnRecord[] }>(
         baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/messages/${encodeURIComponent(messageId)}/blocks`,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}/turns`,
         { token, hostToken, timeoutMs: timeouts.sessionRead },
       ),
-    putRoleplayMessageBlocks: (workspaceId: string, record: RoleplayMessageBlocksRecord) =>
-      requestJson<{ record: RoleplayMessageBlocksRecord }>(
+    putRoleplayTurn: (workspaceId: string, turn: RoleplayTurnRecord) =>
+      requestJson<{ turn: RoleplayTurnRecord }>(
         baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/messages/${encodeURIComponent(record.messageId)}/blocks`,
-        { token, hostToken, method: "PUT", body: { record }, timeoutMs: timeouts.config },
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/turns/${encodeURIComponent(turn.turnId)}`,
+        { token, hostToken, method: "PUT", body: { turn }, timeoutMs: timeouts.config },
       ),
     getSessionGroups: (workspaceId: string) =>
       requestJson<{ state: OpenworkSessionGroupState; updatedAt: number | null }>(

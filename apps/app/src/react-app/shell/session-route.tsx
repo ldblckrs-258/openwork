@@ -21,7 +21,7 @@ import { buildDiagnosticsBundleJson } from "@/app/lib/diagnostics-bundle";
 import { downloadTextAsFile } from "@/app/lib/download";
 import { canCreateWorkspaces } from "@/app/lib/workspace-creation-policy";
 import { createClient, unwrap } from "@/app/lib/opencode";
-import { abortSessionSafe, forkSession, listCommands, revertSession, setSessionArchived, shellInSession, unrevertSession } from "@/app/lib/opencode-session";
+import { abortSessionSafe, compactSession, forkSession, listCommands, revertSession, setSessionArchived, shellInSession, unrevertSession } from "@/app/lib/opencode-session";
 import { useSessionManagementStore as sessionManagementStore } from "@/react-app/domains/session/sidebar/session-management-store";
 import {
   buildOpenworkWorkspaceBaseUrl,
@@ -34,11 +34,22 @@ import {
 import { buildOpenworkEnvRuntimeKey } from "@/app/lib/openwork-env-runtime";
 import type { RoleplayBlock } from "@openwork/types/roleplay";
 import { buildRoleplayTurn } from "@/app/roleplay/turn";
+import {
+  applySwipeResult,
+  createTurnId,
+  planSwipe,
+  repairAfterFailedSwipe,
+  selectAlternative,
+} from "@/app/roleplay/swipe";
+import { compileBlocks } from "@/app/roleplay/blocks";
+import { decideCompaction, MIN_TURNS_BEFORE_COMPACT } from "@/app/roleplay/compact-policy";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
   useBindRoleplaySession,
   useRoleplayPersonas,
   useRoleplaySessionBinding,
+  useRoleplayTurns,
+  useSaveRoleplayTurn,
 } from "@/react-app/domains/roleplay/state/roleplay-queries";
 import { RoleplayPage } from "@/react-app/domains/roleplay/pages/roleplay-page";
 import {
@@ -303,18 +314,24 @@ function nextEvalUnavailableModel(current: ModelRef | null | undefined) {
 // Don't compose `<baseUrl>/workspace/<id>` here.
 
 /**
- * Store the turn's authored blocks against the user message the engine just
- * created.
+ * Record the turn the user just sent, so it can be regenerated later.
  *
- * `promptAsync` answers 204 with no body, and inventing a message id client-side
- * would collide with the engine's own ordering scheme, so the id is read back
- * from the session instead. Failures are logged rather than thrown: losing the
- * ability to replay a swipe is not a reason to fail a turn the user already sent.
+ * `promptAsync` answers 204 with no body, and inventing a message id
+ * client-side would collide with the engine's own ordering scheme, so the ids
+ * are read back from the session. The record is keyed by a client-generated
+ * `turnId`, not by the message id: a regenerate mints new ids for both the user
+ * message and the reply, so a message-keyed record would be orphaned by the one
+ * operation it exists to survive.
+ *
+ * Failures are logged rather than thrown: losing the ability to replay a swipe
+ * is not a reason to fail a turn the user already sent.
  */
-async function persistRoleplayBlocks(input: {
+async function persistRoleplayTurn(input: {
   endpoint: ResolvedWorkspaceEndpoint | null;
   listMessages: (sessionId: string) => Promise<Array<{ info: { id: string; role: string } }> | undefined>;
   sessionId: string;
+  turnId: string;
+  userText: string;
   blocks: RoleplayBlock[];
 }) {
   if (!input.endpoint) return;
@@ -322,14 +339,37 @@ async function persistRoleplayBlocks(input: {
     const messages = (await input.listMessages(input.sessionId)) ?? [];
     const latestUser = [...messages].reverse().find((entry) => entry.info.role === "user");
     if (!latestUser) return;
-    await input.endpoint.client.putRoleplayMessageBlocks(input.endpoint.workspaceId, {
-      messageId: latestUser.info.id,
+    await input.endpoint.client.putRoleplayTurn(input.endpoint.workspaceId, {
+      turnId: input.turnId,
       sessionId: input.sessionId,
+      messageId: latestUser.info.id,
+      userText: input.userText,
       blocks: input.blocks,
+      alternatives: [],
+      activeAlternative: 0,
       createdAt: Date.now(),
     });
   } catch (error) {
-    console.warn("[roleplay] could not persist turn blocks", error);
+    console.warn("[roleplay] could not persist the turn", error);
+  }
+}
+
+/** Total characters of rendered text in a session, for the compaction estimate. */
+async function transcriptTextLength(
+  client: { session: { messages: (parameters: { sessionID: string }) => Promise<{ data?: Array<{ parts?: Array<{ type: string; text?: string }> }> }> } },
+  sessionId: string,
+): Promise<number> {
+  try {
+    const messages = (await client.session.messages({ sessionID: sessionId })).data ?? [];
+    return messages.reduce(
+      (total, message) =>
+        total + (message.parts ?? []).reduce((sum, part) => sum + (part.type === "text" ? (part.text ?? "").length : 0), 0),
+      0,
+    );
+  } catch {
+    // An unreadable transcript is not a reason to refuse the send; skipping
+    // compaction costs a longer prompt, refusing costs the user their turn.
+    return 0;
   }
 }
 
@@ -663,8 +703,18 @@ export function SessionRoute() {
       card: character.card,
       persona: persona?.persona ?? { name: "", description: "" },
       greeting: character.card.data.first_mes,
+      storySoFar: binding.storySoFar,
     };
   }, [roleplayBindingQuery.data, roleplayPersonasQuery.data]);
+  const roleplayTurnsQuery = useRoleplayTurns(selectedWorkspaceEndpoint, roleplaySurface ? selectedSessionId : null);
+  const saveRoleplayTurn = useSaveRoleplayTurn(selectedWorkspaceEndpoint);
+  const [roleplayBusy, setRoleplayBusy] = useState(false);
+  const [roleplayCompacted, setRoleplayCompacted] = useState(false);
+  // Compaction and the abort/revert/prompt chain are independent calls against
+  // the same session with nothing serialising them, so a compaction that fired
+  // during a regenerate would race the revert. This latch is that serialisation.
+  const revertInFlightRef = useRef(false);
+  const latestRoleplayTurn = useMemo(() => roleplayTurnsQuery.data?.at(-1) ?? null, [roleplayTurnsQuery.data]);
   // Agent selection is persisted in local prefs (like the model variant) so
   // it survives reloads instead of silently falling back to "build" (#2101).
   const selectedAgent = local.prefs.selectedAgent;
@@ -1258,6 +1308,19 @@ export function SessionRoute() {
     return {
       workspaceRoot: selectedWorkspaceRoot,
       roleplay: roleplaySurface,
+      roleplayControls: roleplaySurface
+        ? {
+            turn: latestRoleplayTurn,
+            busy: roleplayBusy,
+            storySoFar: roleplaySurface.storySoFar,
+            storySaving: bindRoleplaySession.isPending,
+            compacted: roleplayCompacted,
+            onSwipe: () => void handleRoleplaySwipe(),
+            onSelectAlternative: handleRoleplaySelectAlternative,
+            onBranch: () => void handleRoleplayBranch(),
+            onSaveStorySoFar: (value: string) => void handleSaveStorySoFar(value),
+          }
+        : null,
       developerMode: false,
       modelLabel,
       onModelClick: (sessionId?: string) => {
@@ -1364,6 +1427,36 @@ export function SessionRoute() {
                   return;
                 }
 
+                // Auto-compact fires here and nowhere else. Triggering it on a
+                // timer or on transcript growth would let it run concurrently
+                // with a regenerate's abort/revert/prompt chain against the same
+                // session, which nothing else serialises.
+                const roleplayTurnCount = roleplayTurnsQuery.data?.length ?? 0;
+                // The transcript fetch is the expensive part and it is only
+                // needed once a conversation is long enough to be a candidate,
+                // so the cheap gates run first.
+                if (roleplaySurface && sendModel && roleplayTurnCount >= MIN_TURNS_BEFORE_COMPACT && !revertInFlightRef.current) {
+                  const decision = decideCompaction({
+                    transcriptChars: await transcriptTextLength(opencodeClient, targetSessionId),
+                    systemChars: roleplaySurface.storySoFar.length,
+                    turnCount: roleplayTurnCount,
+                    contextTokens: providerCatalog?.[sendModel.providerID]?.[sendModel.modelID]?.limit?.context,
+                    revertInFlight: revertInFlightRef.current,
+                  });
+                  if (decision.shouldCompact) {
+                    try {
+                      await compactSession(opencodeClient, targetSessionId, sendModel, {
+                        directory: selectedWorkspaceRoot || undefined,
+                      });
+                      setRoleplayCompacted(true);
+                    } catch (error) {
+                      // A failed compaction must not block the turn; the send
+                      // still fits often enough that refusing it would be worse.
+                      console.warn("[roleplay] auto-compact failed", error);
+                    }
+                  }
+                }
+
                 const parts = await draftToParts(draft, selectedWorkspaceRoot, targetSessionId, selectedWorkspaceEndpoint);
                 const envSystemContext = await buildOpenworkEnvSystemContext(client, {
                   cacheKey: targetSessionId,
@@ -1399,10 +1492,12 @@ export function SessionRoute() {
                   throw new Error(serializeSDKError(result.error));
                 }
                 if (roleplayTurn && draft.blocks?.length) {
-                  void persistRoleplayBlocks({
+                  void persistRoleplayTurn({
                     endpoint: selectedWorkspaceEndpoint,
                     listMessages: async (sessionId) => (await opencodeClient.session.messages({ sessionID: sessionId, limit: 4 })).data,
                     sessionId: targetSessionId,
+                    turnId: createTurnId(Date.now(), Math.random().toString(36).slice(2, 8)),
+                    userText: text,
                     blocks: draft.blocks,
                   });
                 }
@@ -1867,8 +1962,165 @@ export function SessionRoute() {
     if (!selectedWorkspaceId) return;
     const sessionId = await handleCreateTaskInWorkspace(selectedWorkspaceId);
     if (!sessionId) return;
-    await bindRoleplaySession.mutateAsync({ sessionId, characterId, personaId, boundAt: Date.now() });
+    await bindRoleplaySession.mutateAsync({ sessionId, characterId, personaId, storySoFar: "", boundAt: Date.now() });
   }, [bindRoleplaySession, handleCreateTaskInWorkspace, selectedWorkspaceId]);
+
+  /**
+   * Regenerate the latest reply.
+   *
+   * The order is forced by the engine, not chosen: the reply must be copied
+   * app-side *before* the revert, because the engine destroys it the moment the
+   * next prompt is dispatched — and it does that even when the prompt fails,
+   * clearing the revert cursor with it. `unrevert()` therefore cannot roll this
+   * back, which is why there is no call to it here. See
+   * `reports/swipe-semantics-spike.md`.
+   */
+  const handleRoleplaySwipe = useCallback(async () => {
+    const turn = latestRoleplayTurn;
+    const endpoint = selectedWorkspaceEndpoint;
+    if (!turn || !endpoint || !opencodeClient || !roleplaySurface || !selectedSessionId) return;
+
+    setRoleplayBusy(true);
+    revertInFlightRef.current = true;
+    try {
+      const existing = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId, limit: 4 }));
+      const reply = [...(existing ?? [])].reverse().find((entry) => entry.info.role === "assistant");
+      if (!reply) return;
+      const replyText = (reply.parts ?? [])
+        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("");
+
+      const plan = planSwipe({
+        turn,
+        currentReply: { text: replyText, messageId: reply.info.id },
+        now: Date.now(),
+      });
+      // Persisted first. After the revert this reply no longer exists anywhere.
+      await saveRoleplayTurn.mutateAsync(plan.turn);
+
+      await abortSessionSafe(opencodeClient, selectedSessionId, selectedWorkspaceRoot || undefined);
+      const reverted = await revertSession(opencodeClient, selectedSessionId, plan.revertMessageId);
+      applySessionRevert(selectedWorkspaceId, reverted);
+
+      const envSystemContext = await buildOpenworkEnvSystemContext(client, {
+        cacheKey: selectedSessionId,
+        runtimeKey: environmentRuntimeKey,
+      });
+      // Director text is recomposed from the stored blocks, so the regenerated
+      // reply runs against the same steering the user gave the first time.
+      const compiled = compileBlocks(plan.turn.blocks);
+      const rebuilt = buildRoleplayTurn({
+        card: roleplaySurface.card,
+        persona: roleplaySurface.persona,
+        greeting: roleplaySurface.greeting,
+        storySoFar: roleplaySurface.storySoFar,
+        directorText: compiled.directorText,
+        envContext: envSystemContext ?? null,
+      });
+
+      const sessionModelSelection = getSessionModelSelection(selectedSessionId);
+      const result = await opencodeClient.session.promptAsync({
+        sessionID: selectedSessionId,
+        // Never `parts: []` — the engine accepts it and blanks the user's message.
+        parts: [{ type: "text", text: plan.userText }],
+        model: sessionModelSelection?.model ?? local.prefs.defaultModel ?? undefined,
+        ...rebuilt.prompt,
+      });
+      if (result.error) throw new Error(serializeSDKError(result.error));
+
+      // The engine minted new ids for both the user message and the reply. The
+      // turn has to follow them or the next regenerate reverts at a message that
+      // no longer exists.
+      const settled = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId, limit: 4 })) ?? [];
+      const newUser = [...settled].reverse().find((entry) => entry.info.role === "user");
+      const newReply = [...settled].reverse().find((entry) => entry.info.role === "assistant");
+      if (newUser && newReply) {
+        await saveRoleplayTurn.mutateAsync(
+          applySwipeResult(plan.turn, {
+            userMessageId: newUser.info.id,
+            replyText: (newReply.parts ?? [])
+              .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+              .map((part) => part.text)
+              .join(""),
+            replyMessageId: newReply.info.id,
+            now: Date.now(),
+          }),
+        );
+      }
+      await refreshRouteState();
+    } catch (error) {
+      const repair = repairAfterFailedSwipe(latestRoleplayTurn);
+      if (repair.danglingUserMessage) {
+        toast.error("Could not regenerate", {
+          description: "The previous reply was discarded by the engine and there was no saved copy to restore.",
+        });
+      } else {
+        toast.error("Could not regenerate", { description: "Showing the previous reply." });
+      }
+      console.warn("[roleplay] regenerate failed", error);
+    } finally {
+      revertInFlightRef.current = false;
+      setRoleplayBusy(false);
+    }
+  }, [
+    client,
+    environmentRuntimeKey,
+    latestRoleplayTurn,
+    local.prefs.defaultModel,
+    opencodeClient,
+    refreshRouteState,
+    roleplaySurface,
+    saveRoleplayTurn,
+    selectedSessionId,
+    selectedWorkspaceEndpoint,
+    selectedWorkspaceId,
+    selectedWorkspaceRoot,
+  ]);
+
+  const handleRoleplaySelectAlternative = useCallback((offset: number) => {
+    if (!latestRoleplayTurn) return;
+    const next = selectAlternative(latestRoleplayTurn, offset);
+    if (next !== latestRoleplayTurn) void saveRoleplayTurn.mutateAsync(next);
+  }, [latestRoleplayTurn, saveRoleplayTurn]);
+
+  const handleRoleplayBranch = useCallback(async () => {
+    if (!opencodeClient || !selectedSessionId || !selectedWorkspaceEndpoint || !roleplaySurface) return;
+    try {
+      const forked = await forkSession(opencodeClient, selectedSessionId);
+      // The fork copies the transcript but knows nothing about roleplay, so the
+      // branch has to be bound too or it opens as an ordinary chat.
+      const binding = roleplayBindingQuery.data?.binding;
+      if (binding) {
+        await selectedWorkspaceEndpoint.client.putRoleplaySessionBinding(selectedWorkspaceEndpoint.workspaceId, {
+          ...binding,
+          sessionId: forked.id,
+          boundAt: Date.now(),
+        });
+      }
+      await refreshRouteState();
+      navigateToWorkspaceSession(selectedWorkspaceId, forked.id);
+    } catch (error) {
+      toast.error("Could not branch this conversation", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }, [
+    navigateToWorkspaceSession,
+    opencodeClient,
+    refreshRouteState,
+    roleplayBindingQuery.data,
+    roleplaySurface,
+    selectedSessionId,
+    selectedWorkspaceEndpoint,
+    selectedWorkspaceId,
+  ]);
+
+  const handleSaveStorySoFar = useCallback(async (value: string) => {
+    const binding = roleplayBindingQuery.data?.binding;
+    if (!binding) return;
+    await bindRoleplaySession.mutateAsync({ ...binding, storySoFar: value });
+  }, [bindRoleplaySession, roleplayBindingQuery.data]);
 
   // Latest session-list state for prev/next session tab navigation. The
   // `options` field is updated by `onSessionTabsChange` from SessionPage so we

@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
+import type { RoleplayTurnRecord } from "@openwork/types/roleplay";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
 import { Check, Minimize2 } from "lucide-react";
@@ -40,7 +41,10 @@ import type {
   CloudMcpSubmissionResult,
 } from "@/react-app/domains/connections/cloud-mcp-submit-readiness";
 import { compileDraftText } from "@/app/roleplay/blocks";
+import { activeAlternativeText } from "@/app/roleplay/swipe";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
+import { SwipeControls } from "@/react-app/domains/roleplay/components/swipe-controls";
+import { StorySoFar } from "@/react-app/domains/roleplay/components/story-so-far";
 import { ReactSessionComposer } from "./composer/composer";
 import { useSessionModelSelection } from "./session-model-store";
 import type { ProviderCatalog } from "./use-model-behavior";
@@ -294,6 +298,18 @@ function createChatTranscriptEvalMessages(sessionId: string) {
   return { messages };
 }
 
+export type RoleplayControls = {
+  turn: RoleplayTurnRecord | null;
+  busy: boolean;
+  storySoFar: string;
+  storySaving: boolean;
+  compacted: boolean;
+  onSwipe: () => void;
+  onSelectAlternative: (offset: number) => void;
+  onBranch: () => void;
+  onSaveStorySoFar: (value: string) => void;
+};
+
 export type SessionSurfaceProps = {
   client: OpenworkServerClient;
   environmentClient?: OpenworkServerClient | null;
@@ -302,6 +318,8 @@ export type SessionSurfaceProps = {
   sessionId: string;
   /** Non-null only for sessions bound to a character; gates the composer's block triggers. */
   roleplay?: RoleplaySurfaceState | null;
+  /** Regenerate/branch/story-so-far, rendered above the composer for roleplay sessions. */
+  roleplayControls?: RoleplayControls | null;
   isControlTarget: boolean;
   opencodeBaseUrl: string;
   openworkToken: string;
@@ -934,8 +952,20 @@ export function SessionSurface(props: SessionSurfaceProps) {
     // to write an assistant message, so the greeting is rendered rather than
     // stored. `buildRoleplayTurn` puts the same text in the compiled prompt so
     // the model knows what it opened with.
+    // Navigating back to an earlier alternative replaces the reply on screen.
+    // The engine destroyed it, so this app-side copy is the only place it still
+    // exists — see `reports/swipe-semantics-spike.md`.
+    const archived = props.roleplayControls?.turn ? activeAlternativeText(props.roleplayControls.turn) : undefined;
+    const withAlternative = archived
+      ? base.map((message, index) =>
+          index === base.length - 1 && message.role === "assistant"
+            ? { ...message, parts: [{ type: "text" as const, text: archived }] }
+            : message,
+        )
+      : base;
+
     const greeting = props.roleplay?.greeting.trim();
-    if (!greeting) return base;
+    if (!greeting) return withAlternative;
     return [
       {
         id: `${props.sessionId}:roleplay-greeting`,
@@ -943,9 +973,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
         parts: [{ type: "text", text: greeting }],
         metadata: { opencode: { created: 0 } },
       } satisfies UIMessage,
-      ...base,
+      ...withAlternative,
     ];
-  }, [baseRenderedMessages, evalMarkdownMessages, props.roleplay?.greeting, props.sessionId]);
+  }, [baseRenderedMessages, evalMarkdownMessages, props.roleplay?.greeting, props.roleplayControls?.turn, props.sessionId]);
   const seedMarkdownPrimitiveControlAction = useMemo<OpenworkControlAction | null>(() => {
     if (!import.meta.env.DEV) return null;
 
@@ -2140,6 +2170,23 @@ export function SessionSurface(props: SessionSurfaceProps) {
               Open Connect
             </button>
           </div>
+        ) : null}
+        {props.roleplayControls ? (
+          <>
+            <SwipeControls
+              turn={props.roleplayControls.turn}
+              busy={props.roleplayControls.busy || chatStreaming}
+              onSwipe={props.roleplayControls.onSwipe}
+              onSelectAlternative={props.roleplayControls.onSelectAlternative}
+              onBranch={props.roleplayControls.onBranch}
+            />
+            <StorySoFar
+              value={props.roleplayControls.storySoFar}
+              saving={props.roleplayControls.storySaving}
+              compacted={props.roleplayControls.compacted}
+              onSave={props.roleplayControls.onSaveStorySoFar}
+            />
+          </>
         ) : null}
         <ReactSessionComposer
           draft={draft}

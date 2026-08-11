@@ -19,4 +19,6 @@ export type RoleplaySurfaceState = {
    * it opened with.
    */
   greeting: string;
+  /** User-authored continuity notes; compiled into `system` on every turn. */
+  storySoFar: string;
 };

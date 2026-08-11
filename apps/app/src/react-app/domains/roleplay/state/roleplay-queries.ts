@@ -1,5 +1,10 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { RoleplayCharacterRecord, RoleplayPersonaRecord, RoleplaySessionBinding } from "@openwork/types/roleplay";
+import type {
+  RoleplayCharacterRecord,
+  RoleplayPersonaRecord,
+  RoleplaySessionBinding,
+  RoleplayTurnRecord,
+} from "@openwork/types/roleplay";
 
 import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
 
@@ -121,6 +126,36 @@ export function useRoleplaySessionBinding(endpoint: ResolvedWorkspaceEndpoint | 
     queryFn: async () => {
       if (!endpoint || !sessionId) return null;
       return endpoint.client.getRoleplaySessionBinding(endpoint.workspaceId, sessionId);
+    },
+  });
+}
+
+export function roleplayTurnsQueryKey(workspaceId: string, sessionId: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "turns", workspaceId, sessionId] as const;
+}
+
+export function useRoleplayTurns(endpoint: ResolvedWorkspaceEndpoint | null, sessionId: string | null) {
+  return useQuery({
+    queryKey: roleplayTurnsQueryKey(endpoint?.workspaceId ?? "", sessionId ?? ""),
+    enabled: Boolean(endpoint) && Boolean(sessionId),
+    queryFn: async () => {
+      if (!endpoint || !sessionId) return [];
+      return (await endpoint.client.listRoleplayTurns(endpoint.workspaceId, sessionId)).turns;
+    },
+  });
+}
+
+export function useSaveRoleplayTurn(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (turn: RoleplayTurnRecord) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return (await endpoint.client.putRoleplayTurn(endpoint.workspaceId, turn)).turn;
+    },
+    onSuccess: async (turn) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({ queryKey: roleplayTurnsQueryKey(endpoint.workspaceId, turn.sessionId) });
+      }
     },
   });
 }

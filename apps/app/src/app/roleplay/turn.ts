@@ -14,6 +14,8 @@ export type RoleplayTurnInput = {
   greeting?: string;
   /** This turn's out-of-character steering, already split out of the message. */
   directorText?: string;
+  /** User-authored continuity notes; carries the scene across a compaction. */
+  storySoFar?: string;
   envContext: string | null | undefined;
 };
 
@@ -43,9 +45,13 @@ function openingLine(greeting: string, char: string, user: string): string {
 export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
   const char = (input.charName ?? input.card.data.name).trim() || "Character";
   const user = input.persona.name.trim() || "User";
+  const story = substituteMacros(input.storySoFar ?? "", { char, user }).trim();
   const characterPrompt = [
     compilePrompt(input.card, input.persona, input.charName ? { charName: input.charName } : {}),
     input.greeting ? openingLine(input.greeting, char, user) : "",
+    // After the story so far, because it describes where the scene has got to
+    // rather than who the character is.
+    story ? `# Story So Far\n\n${story}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
