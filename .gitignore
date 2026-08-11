@@ -74,3 +74,7 @@ evals/results/
 
 # Warden local run logs
 .warden/logs/
+
+# skilss/mcp
+.serena
+plans/
