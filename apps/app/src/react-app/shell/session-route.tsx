@@ -32,7 +32,7 @@ import {
   type ResolvedWorkspaceEndpoint,
 } from "@/app/lib/workspace-endpoint";
 import { buildOpenworkEnvRuntimeKey } from "@/app/lib/openwork-env-runtime";
-import type { RoleplayBlock } from "@openwork/types/roleplay";
+import type { RoleplayBlock, RoleplayTurnRecord } from "@openwork/types/roleplay";
 import { buildRoleplayTurn } from "@/app/roleplay/turn";
 import {
   applySwipeResult,
@@ -713,7 +713,10 @@ export function SessionRoute() {
   // Compaction and the abort/revert/prompt chain are independent calls against
   // the same session with nothing serialising them, so a compaction that fired
   // during a regenerate would race the revert. This latch is that serialisation.
-  const revertInFlightRef = useRef(false);
+  // It holds the session id rather than a flag: this component is not remounted
+  // per session, so a boolean would also suppress compaction for every other
+  // session while one of them is mid-regenerate.
+  const revertInFlightRef = useRef<string | null>(null);
   const latestRoleplayTurn = useMemo(() => roleplayTurnsQuery.data?.at(-1) ?? null, [roleplayTurnsQuery.data]);
   // Agent selection is persisted in local prefs (like the model variant) so
   // it survives reloads instead of silently falling back to "build" (#2101).
@@ -1364,7 +1367,12 @@ export function SessionRoute() {
         const targetSessionId = sessionId.trim() || selectedSessionId;
         if (!targetSessionId) return { outcome: "cancelled", reason: "context_changed" };
         const text = (draft.resolvedText ?? draft.text).trim();
-        if (!text && draft.attachments.length === 0) {
+        // A roleplay turn can be director-only: the user steers out of character
+        // without saying anything in it. That draft has no message text at all,
+        // so without this it would be cancelled here and the instruction would
+        // never reach the model, silently and with nothing shown to the user.
+        const hasDirectorOnly = Boolean(draft.directorText?.trim());
+        if (!text && draft.attachments.length === 0 && !hasDirectorOnly) {
           return { outcome: "cancelled", reason: "context_changed" };
         }
         // Per-conversation model memory: a session that picked its own model
@@ -1435,13 +1443,14 @@ export function SessionRoute() {
                 // The transcript fetch is the expensive part and it is only
                 // needed once a conversation is long enough to be a candidate,
                 // so the cheap gates run first.
-                if (roleplaySurface && sendModel && roleplayTurnCount >= MIN_TURNS_BEFORE_COMPACT && !revertInFlightRef.current) {
+                const revertInFlightHere = revertInFlightRef.current === targetSessionId;
+                if (roleplaySurface && sendModel && roleplayTurnCount >= MIN_TURNS_BEFORE_COMPACT && !revertInFlightHere) {
                   const decision = decideCompaction({
                     transcriptChars: await transcriptTextLength(opencodeClient, targetSessionId),
                     systemChars: roleplaySurface.storySoFar.length,
                     turnCount: roleplayTurnCount,
                     contextTokens: providerCatalog?.[sendModel.providerID]?.[sendModel.modelID]?.limit?.context,
-                    revertInFlight: revertInFlightRef.current,
+                    revertInFlight: revertInFlightHere,
                   });
                   if (decision.shouldCompact) {
                     try {
@@ -1981,7 +1990,12 @@ export function SessionRoute() {
     if (!turn || !endpoint || !opencodeClient || !roleplaySurface || !selectedSessionId) return;
 
     setRoleplayBusy(true);
-    revertInFlightRef.current = true;
+    revertInFlightRef.current = selectedSessionId;
+    // Hoisted: the capture is persisted before anything can fail, so the failure
+    // path has to reason from it rather than from the pre-swipe turn. Reading
+    // the pre-swipe turn instead would report "no saved copy" about a copy that
+    // was saved a moment earlier.
+    let capturedTurn: RoleplayTurnRecord | null = null;
     try {
       const existing = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId, limit: 4 }));
       const reply = [...(existing ?? [])].reverse().find((entry) => entry.info.role === "assistant");
@@ -1996,6 +2010,7 @@ export function SessionRoute() {
         currentReply: { text: replyText, messageId: reply.info.id },
         now: Date.now(),
       });
+      capturedTurn = plan.turn;
       // Persisted first. After the revert this reply no longer exists anywhere.
       await saveRoleplayTurn.mutateAsync(plan.turn);
 
@@ -2020,11 +2035,16 @@ export function SessionRoute() {
       });
 
       const sessionModelSelection = getSessionModelSelection(selectedSessionId);
+      // Same model *and* variant as an ordinary send. Dropping the variant here
+      // would quietly regenerate against the provider's default reasoning mode,
+      // which reads as the character changing rather than as a lost setting.
+      const swipeVariant = sessionModelSelection ? sessionModelSelection.variant : modelVariantValue;
       const result = await opencodeClient.session.promptAsync({
         sessionID: selectedSessionId,
         // Never `parts: []` — the engine accepts it and blanks the user's message.
         parts: [{ type: "text", text: plan.userText }],
         model: sessionModelSelection?.model ?? local.prefs.defaultModel ?? undefined,
+        ...(swipeVariant ? { variant: swipeVariant } : {}),
         ...rebuilt.prompt,
       });
       if (result.error) throw new Error(serializeSDKError(result.error));
@@ -2050,17 +2070,25 @@ export function SessionRoute() {
       }
       await refreshRouteState();
     } catch (error) {
-      const repair = repairAfterFailedSwipe(latestRoleplayTurn);
+      const repair = repairAfterFailedSwipe(capturedTurn ?? turn);
       if (repair.danglingUserMessage) {
         toast.error("Could not regenerate", {
           description: "The previous reply was discarded by the engine and there was no saved copy to restore.",
         });
       } else {
+        // Points the turn back at the last reply that actually exists, so the
+        // transcript and the swipe counter agree without the user having to
+        // click "previous" to resynchronise them.
+        try {
+          await saveRoleplayTurn.mutateAsync(repair.turn);
+        } catch (repairError) {
+          console.warn("[roleplay] could not restore the previous reply", repairError);
+        }
         toast.error("Could not regenerate", { description: "Showing the previous reply." });
       }
       console.warn("[roleplay] regenerate failed", error);
     } finally {
-      revertInFlightRef.current = false;
+      revertInFlightRef.current = null;
       setRoleplayBusy(false);
     }
   }, [

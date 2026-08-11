@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
-import * as React from "react";
 import type { RoleplayPersonaRecord } from "@openwork/types/roleplay";
+import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,11 +27,13 @@ export function PersonaEditor({ persona, saving, onSave }: PersonaEditorProps) {
 
   return (
     <form
-      className="flex flex-col gap-4"
+      className="flex flex-col gap-4 px-10 py-6 max-w-3xl"
       onSubmit={(event) => {
         event.preventDefault();
         if (!draft.persona.name.trim()) {
-          setError("Give your persona a name — the character uses it to address you.");
+          setError(
+            "Give your persona a name — the character uses it to address you.",
+          );
           return;
         }
         setError("");
@@ -44,7 +46,12 @@ export function PersonaEditor({ persona, saving, onSave }: PersonaEditorProps) {
           id="persona-name"
           value={draft.persona.name}
           placeholder="Wren"
-          onChange={(event) => setDraft((current) => ({ ...current, persona: { ...current.persona, name: event.target.value } }))}
+          onChange={(event) =>
+            setDraft((current) => ({
+              ...current,
+              persona: { ...current.persona, name: event.target.value },
+            }))
+          }
         />
         {error ? <p className="text-destructive text-sm">{error}</p> : null}
       </div>
@@ -57,10 +64,15 @@ export function PersonaEditor({ persona, saving, onSave }: PersonaEditorProps) {
           value={draft.persona.description}
           placeholder="A courier with an overdue book."
           onChange={(event) =>
-            setDraft((current) => ({ ...current, persona: { ...current.persona, description: event.target.value } }))
+            setDraft((current) => ({
+              ...current,
+              persona: { ...current.persona, description: event.target.value },
+            }))
           }
         />
-        <p className="text-muted-foreground text-sm">Included in the prompt so the character knows who they are talking to.</p>
+        <p className="text-muted-foreground text-sm">
+          Included in the prompt so the character knows who they are talking to.
+        </p>
       </div>
 
       <div className="flex justify-end">

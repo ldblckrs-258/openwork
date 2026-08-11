@@ -37,9 +37,6 @@ export const PUNCTUATION_TRIGGERS = {
 
 export type BlockTrigger = {
   type: AuthoredBlockType;
-  /** Characters of the line the trigger consumed; the chip replaces exactly these. */
-  consumed: number;
-  source: "slash" | "punctuation";
 };
 
 /**
@@ -54,10 +51,10 @@ export type BlockTrigger = {
  */
 export function detectBlockTrigger(lineBeforeCursor: string): BlockTrigger | null {
   for (const [prefix, type] of Object.entries(SLASH_TRIGGERS) as Array<[string, AuthoredBlockType]>) {
-    if (lineBeforeCursor === prefix) return { type, consumed: prefix.length, source: "slash" };
+    if (lineBeforeCursor === prefix) return { type };
   }
   for (const [char, type] of Object.entries(PUNCTUATION_TRIGGERS) as Array<[string, AuthoredBlockType]>) {
-    if (lineBeforeCursor === char) return { type, consumed: char.length, source: "punctuation" };
+    if (lineBeforeCursor === char) return { type };
   }
   return null;
 }

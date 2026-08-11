@@ -1,14 +1,22 @@
 /** @jsxImportSource react */
-import * as React from "react";
+import type {
+  CharacterCardDataV2,
+  RoleplayCharacterRecord,
+  RoleplayPersona,
+} from "@openwork/types/roleplay";
 import { Plus, Trash2 } from "lucide-react";
-import type { CharacterCardDataV2, RoleplayCharacterRecord, RoleplayPersona } from "@openwork/types/roleplay";
+import * as React from "react";
 
+import {
+  applyCardEdit,
+  validateCharacter,
+  type CharacterFieldError,
+} from "@/app/roleplay/character-draft";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { applyCardEdit, validateCharacter, type CharacterFieldError } from "@/app/roleplay/character-draft";
 import { CompiledPromptDebug } from "../components/compiled-prompt-debug";
 import { ExampleDialogueEditor } from "../components/example-dialogue-editor";
 
@@ -29,13 +37,20 @@ function FieldError({ message }: { message?: string }) {
   return <p className="text-destructive text-sm">{message}</p>;
 }
 
-export function CharacterEditor({ character, persona, saving, onSave, onCancel }: CharacterEditorProps) {
+export function CharacterEditor({
+  character,
+  persona,
+  saving,
+  onSave,
+  onCancel,
+}: CharacterEditorProps) {
   const [draft, setDraft] = React.useState(character);
   const [errors, setErrors] = React.useState<CharacterFieldError[]>([]);
 
   React.useEffect(() => setDraft(character), [character]);
 
-  const edit = (change: Partial<CharacterCardDataV2>) => setDraft((current) => applyCardEdit(current, change, Date.now()));
+  const edit = (change: Partial<CharacterCardDataV2>) =>
+    setDraft((current) => applyCardEdit(current, change, Date.now()));
   const data = draft.card.data;
 
   const submit = () => {
@@ -48,7 +63,7 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
 
   return (
     <form
-      className="flex flex-col gap-6"
+      className="flex flex-col gap-6  px-10 py-6 max-w-3xl mx-auto"
       onSubmit={(event) => {
         event.preventDefault();
         submit();
@@ -87,7 +102,9 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
             placeholder="You're late."
             onChange={(event) => edit({ first_mes: event.target.value })}
           />
-          <p className="text-muted-foreground text-sm">The character speaks first. This is the line they open with.</p>
+          <p className="text-muted-foreground text-sm">
+            The character speaks first. This is the line they open with.
+          </p>
           <FieldError message={errorFor(errors, "first_mes")} />
         </div>
       </section>
@@ -97,7 +114,9 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
       <section className="flex flex-col gap-4">
         <div>
           <h3 className="text-sm font-medium">Voice</h3>
-          <p className="text-muted-foreground text-sm">How they sound and where the scene starts.</p>
+          <p className="text-muted-foreground text-sm">
+            How they sound and where the scene starts.
+          </p>
         </div>
 
         <div className="flex flex-col gap-2">
@@ -122,7 +141,10 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
           />
         </div>
 
-        <ExampleDialogueEditor value={data.mes_example} onChange={(mesExample) => edit({ mes_example: mesExample })} />
+        <ExampleDialogueEditor
+          value={data.mes_example}
+          onChange={(mesExample) => edit({ mes_example: mesExample })}
+        />
 
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
@@ -131,13 +153,17 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => edit({ alternate_greetings: [...data.alternate_greetings, ""] })}
+              onClick={() =>
+                edit({ alternate_greetings: [...data.alternate_greetings, ""] })
+              }
             >
               <Plus className="size-4" />
               Add greeting
             </Button>
           </div>
-          <p className="text-muted-foreground text-sm">Other ways the character could open the scene.</p>
+          <p className="text-muted-foreground text-sm">
+            Other ways the character could open the scene.
+          </p>
           {data.alternate_greetings.map((greeting, index) => (
             <div key={index} className="flex items-start gap-2">
               <Textarea
@@ -154,7 +180,13 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
                 variant="ghost"
                 size="icon"
                 aria-label={`Remove greeting ${index + 1}`}
-                onClick={() => edit({ alternate_greetings: data.alternate_greetings.filter((_, position) => position !== index) })}
+                onClick={() =>
+                  edit({
+                    alternate_greetings: data.alternate_greetings.filter(
+                      (_, position) => position !== index,
+                    ),
+                  })
+                }
               >
                 <Trash2 className="size-4" />
               </Button>
@@ -167,7 +199,13 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
 
       <section className="flex flex-col gap-2">
         <Label htmlFor="character-phi">Post-history instructions</Label>
-        <Textarea id="character-phi" rows={2} value={data.post_history_instructions} disabled readOnly />
+        <Textarea
+          id="character-phi"
+          rows={2}
+          value={data.post_history_instructions}
+          disabled
+          readOnly
+        />
         {/*
           Shown disabled rather than hidden. Imported community cards often set
           this field, and its whole meaning is that it lands after chat history —
@@ -177,8 +215,9 @@ export function CharacterEditor({ character, persona, saving, onSave, onCancel }
           silently never reaches the model.
         */}
         <p className="text-muted-foreground text-sm">
-          Not supported. This engine places the system prompt before chat history, so these instructions can never take
-          effect. The text is preserved on export.
+          Not supported. This engine places the system prompt before chat
+          history, so these instructions can never take effect. The text is
+          preserved on export.
         </p>
       </section>
 

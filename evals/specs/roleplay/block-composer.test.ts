@@ -99,6 +99,9 @@ describe("compilation", () => {
   });
 
   test("a director-only turn produces steering and no message at all", () => {
+    // The send path has to notice this case specifically: its "is there anything
+    // to send" check reads the message text, which is empty here, so without a
+    // director-aware guard the instruction is silently dropped.
     const compiled = compileDraftText(`${BLOCK_MARKERS.director}skip ahead to the next morning`);
 
     expect(compiled.messageText).toBe("");

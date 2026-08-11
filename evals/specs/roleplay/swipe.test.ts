@@ -140,6 +140,42 @@ describe("a failed regenerate", () => {
     expect(repair.restoredReply).toBeUndefined();
     expect(repair.danglingUserMessage).toBe(true);
   });
+
+  test("the repaired turn points at a reply that exists", () => {
+    // `planSwipe` parks the index one past the captured replies so the incoming
+    // live reply renders. When it never arrives, leaving the index there shows
+    // the raw transcript under a counter claiming an archived reply is on screen.
+    const planned = planSwipe({
+      turn: turn(),
+      currentReply: { text: "She says nothing.", messageId: "msg_a" },
+      now: 1,
+    }).turn;
+    expect(planned.activeAlternative).toBe(planned.alternatives.length);
+
+    const repaired = repairAfterFailedSwipe(planned).turn;
+
+    expect(repaired.activeAlternative).toBe(planned.alternatives.length - 1);
+    expect(activeAlternativeText(repaired)).toBe("She says nothing.");
+  });
+
+  test("repairing a turn that captured nothing does not produce a negative index", () => {
+    expect(repairAfterFailedSwipe(turn()).turn.activeAlternative).toBe(0);
+  });
+
+  test("the failure path must read the planned turn, not the one it started from", () => {
+    // The capture is already persisted by the time anything can fail. Reporting
+    // from the pre-swipe turn tells the user their reply is unrecoverable while
+    // a copy of it sits in the store.
+    const before = turn();
+    const planned = planSwipe({
+      turn: before,
+      currentReply: { text: "She says nothing.", messageId: "msg_a" },
+      now: 1,
+    }).turn;
+
+    expect(repairAfterFailedSwipe(before).danglingUserMessage).toBe(true);
+    expect(repairAfterFailedSwipe(planned).danglingUserMessage).toBe(false);
+  });
 });
 
 describe("director replay", () => {

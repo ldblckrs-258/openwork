@@ -94,10 +94,23 @@ export type SwipeFailureRepair = {
    */
   restoredReply: RoleplayAlternative | undefined;
   danglingUserMessage: boolean;
+  /**
+   * The turn as it must be persisted after the failure.
+   *
+   * `planSwipe` deliberately points `activeAlternative` one past the captured
+   * replies so the transcript shows the incoming live one. When that reply never
+   * arrives the index is left out of bounds, which renders as the raw engine
+   * transcript under a swipe counter claiming an archived reply is on screen.
+   */
+  turn: RoleplayTurnRecord;
 };
 
 /**
  * Decide what to show after a regenerate that failed.
+ *
+ * Must be given the turn `planSwipe` produced, not the one it was given: the
+ * captured reply exists only on the former, and it is already persisted by the
+ * time anything can fail.
  *
  * `unrevert()` is deliberately not part of this. The spike proved the cursor is
  * already null and the messages already gone by the time the failure surfaces,
@@ -106,7 +119,11 @@ export type SwipeFailureRepair = {
  */
 export function repairAfterFailedSwipe(turn: RoleplayTurnRecord): SwipeFailureRepair {
   const restoredReply = turn.alternatives[turn.alternatives.length - 1];
-  return { restoredReply, danglingUserMessage: restoredReply === undefined };
+  return {
+    restoredReply,
+    danglingUserMessage: restoredReply === undefined,
+    turn: { ...turn, activeAlternative: Math.max(turn.alternatives.length - 1, 0) },
+  };
 }
 
 /** Clamp navigation to the alternatives that exist. */
