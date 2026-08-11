@@ -18,12 +18,14 @@ import {
   ROLEPLAY_STORE_SCHEMA_VERSION,
   roleplayCardRevisionSchema,
   roleplayCharacterRecordSchema,
+  roleplayLorebookRecordSchema,
   roleplayMemoryRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
   type RoleplayCardRevision,
   type RoleplayCharacterRecord,
+  type RoleplayLorebookRecord,
   type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
   type RoleplaySessionBinding,
@@ -180,6 +182,7 @@ const sessionStore = createDocumentStore("roleplay_sessions", "sessions_json", r
 const turnStore = createDocumentStore("roleplay_turns", "turns_json", roleplayTurnRecordSchema);
 const memoryStore = createDocumentStore("roleplay_memories", "memories_json", roleplayMemoryRecordSchema);
 const revisionStore = createDocumentStore("roleplay_revisions", "revisions_json", roleplayCardRevisionSchema);
+const lorebookStore = createDocumentStore("roleplay_lorebooks", "lorebooks_json", roleplayLorebookRecordSchema);
 
 export async function listCharacters(config: ServerConfig, workspaceId: string): Promise<RoleplayCharacterRecord[]> {
   const document = await characterStore.read(config, workspaceId);
@@ -422,6 +425,40 @@ export async function writeRevision(
       if (victim) delete next[victim.id];
     }
     return { next, result: record };
+  });
+}
+
+/** Newest first, matching the character library, since the lorebook page sits beside it. */
+export async function listLorebooks(config: ServerConfig, workspaceId: string): Promise<RoleplayLorebookRecord[]> {
+  return Object.values(await lorebookStore.read(config, workspaceId)).sort(
+    (left, right) => right.updatedAt - left.updatedAt,
+  );
+}
+
+export async function writeLorebook(
+  config: ServerConfig,
+  workspaceId: string,
+  record: RoleplayLorebookRecord,
+): Promise<RoleplayLorebookRecord> {
+  return lorebookStore.updateDocument(config, workspaceId, (current) => ({
+    next: { ...current, [record.id]: record },
+    result: record,
+  }));
+}
+
+/**
+ * Remove a lorebook outright.
+ *
+ * Unlike a character, a book is not tombstoned: nothing renders past turns from
+ * it, and a deleted book simply stops being injected. Its attachments die with
+ * it, so no character is left pointing at a book that is not there.
+ */
+export async function deleteLorebook(config: ServerConfig, workspaceId: string, lorebookId: string): Promise<boolean> {
+  return lorebookStore.updateDocument(config, workspaceId, (current) => {
+    if (!(lorebookId in current)) return { next: current, result: false };
+    const next = { ...current };
+    delete next[lorebookId];
+    return { next, result: true };
   });
 }
 

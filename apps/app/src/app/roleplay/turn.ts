@@ -1,7 +1,13 @@
-import type { CharacterCardV2, RoleplayMemoryRecord, RoleplayPersona } from "@openwork/types/roleplay";
+import type {
+  CharacterCardV2,
+  RoleplayLorebookRecord,
+  RoleplayMemoryRecord,
+  RoleplayPersona,
+} from "@openwork/types/roleplay";
 
 import { compilePrompt } from "./compile-prompt.js";
 import { composeSystem, type ComposedSystem } from "./compose-system.js";
+import { selectLorebookEntries, type LorebookScanMessage, type LorebookSelection } from "./lorebook.js";
 import { substituteMacros } from "./macros.js";
 import { selectMemories } from "./memory.js";
 import { roleplayPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
@@ -19,12 +25,23 @@ export type RoleplayTurnInput = {
   storySoFar?: string;
   /** Approved memories for this character. Budgeted before they reach the prompt. */
   memories?: RoleplayMemoryRecord[];
+  /** Lorebooks attached to this character. Only the entries this turn triggers reach the prompt. */
+  lorebooks?: RoleplayLorebookRecord[];
+  /**
+   * Recent transcript, oldest first, for lorebook key matching.
+   *
+   * The message being sent belongs at the end: an entry keyed on a term the user
+   * just typed has to fire for the reply to that message, not for the one after.
+   */
+  scanMessages?: LorebookScanMessage[];
   envContext: string | null | undefined;
 };
 
 export type RoleplayTurn = {
   prompt: RoleplayPromptOptions;
   composed: ComposedSystem;
+  /** Which lorebook entries fired, and why every candidate did or did not. */
+  lorebook: LorebookSelection;
 };
 
 /**
@@ -53,9 +70,12 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
   // chosen injections and ranks them against the lorebook, so deciding *which*
   // memories are candidates has to happen before it sees them.
   const memories = selectMemories(input.memories ?? []).injections;
+  const lorebook = selectLorebookEntries(input.lorebooks ?? [], input.scanMessages ?? []);
   const characterPrompt = [
     compilePrompt(input.card, input.persona, {
       ...(input.charName ? { charName: input.charName } : {}),
+      lorebookBefore: lorebook.before,
+      lorebook: lorebook.after,
       memories,
     }),
     input.greeting ? openingLine(input.greeting, char, user) : "",
@@ -72,5 +92,5 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
     directorText: input.directorText,
   });
 
-  return { prompt: roleplayPromptOptions(composed.system), composed };
+  return { prompt: roleplayPromptOptions(composed.system), composed, lorebook };
 }

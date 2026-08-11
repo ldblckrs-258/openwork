@@ -4,6 +4,7 @@ import * as React from "react"
 import {
   AlertTriangle,
   Check,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Download,
@@ -12,6 +13,7 @@ import {
   LoaderCircle,
   MoreHorizontal,
   Pencil,
+  RefreshCw,
   Split,
   Undo2,
 } from "lucide-react"
@@ -24,6 +26,7 @@ import {
   type UIMessage,
 } from "ai"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
+import { RoleplayText } from "@/components/chat/roleplay-text"
 import { openDesktopUrl, revealDesktopItemInDir } from "@/app/lib/desktop"
 import { isElectronRuntime } from "@/app/lib/runtime-env"
 import { SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX } from "@/app/types"
@@ -45,7 +48,11 @@ import { SkillTool } from "@/components/tools/skill"
 import { TodoWriteTool } from "@/components/tools/todowrite"
 import { WebfetchTool } from "@/components/tools/webfetch"
 import { WebsearchTool } from "@/components/tools/websearch"
-import { useMessageList, useSessionErrorMessage } from "@/components/chat/message-list-provider"
+import {
+  useMessageList,
+  useSessionErrorMessage,
+  type RoleplaySwipeControls,
+} from "@/components/chat/message-list-provider"
 import { ArtifactList } from "@/components/chat/artifact"
 import { TaskSuggestions } from "@/components/chat/task-suggestions"
 import {
@@ -420,7 +427,7 @@ type AssistantMessageProps = {
 
 const AssistantMessage = React.memo(
   ({ message, hideReasoning }: AssistantMessageProps) => {
-    const { showThinking, highlightQuery } = useMessageList()
+    const { showThinking, highlightQuery, roleplay } = useMessageList()
     const messageText = React.useMemo(() => getMessagesText([message]), [message])
     const assistantRenderGroups = React.useMemo(
       () => {
@@ -451,7 +458,17 @@ const AssistantMessage = React.memo(
               >
                 {assistantRenderGroups.map((group, index) => {
                   if (group.kind === "text") {
-                    return (
+                    // Roleplay prose is not markdown: its asterisks and quotes
+                    // are stage directions, so it gets the transcript renderer
+                    // and every other session keeps the markdown one.
+                    return roleplay ? (
+                      <RoleplayText
+                        key={`text-${index}`}
+                        text={group.text}
+                        context={roleplay}
+                        className="text-foreground w-full min-w-0 flex-1 leading-7 !select-text"
+                      />
+                    ) : (
                       <MessageContent
                         key={`text-${index}`}
                         className="text-foreground prose w-full min-w-0 flex-1 rounded-lg bg-transparent p-0 !select-text"
@@ -635,7 +652,7 @@ function renderUserTextWithSkillChips(text: string, highlightQuery: string | und
 
 const UserMessage = React.memo(
   ({ message, isStreaming }: UserMessageProps) => {
-    const { onRevertToUserMessage, onForkAtMessage, onEditUserMessage, highlightQuery } = useMessageList()
+    const { onRevertToUserMessage, onForkAtMessage, onEditUserMessage, highlightQuery, roleplay } = useMessageList()
     const messageText = React.useMemo(() => getMessagesText([message]), [message])
     const inlineParts = React.useMemo(
       () => message.parts.filter((part) => (part.type === "text" && Boolean(part.text)) || isFileUIPart(part)),
@@ -665,7 +682,11 @@ const UserMessage = React.memo(
                   >
                     {inlineParts.map((part, index) => {
                       if (part.type === "text") {
-                        return (
+                        // The user's own turn reads in the same conventions the
+                        // composer wrote it in, so it is coloured the same way.
+                        return roleplay ? (
+                          <RoleplayText key={`text-${index}`} text={part.text} context={roleplay} />
+                        ) : (
                           <span key={`text-${index}`} className="whitespace-pre-wrap">
                             {renderUserTextWithSkillChips(part.text, highlightQuery)}
                           </span>
@@ -957,12 +978,75 @@ interface AssistantMessageGroupProps {
   isStreaming: boolean
 }
 
+/**
+ * Regenerate, and step back through replies already generated.
+ *
+ * Lives in the message group's own action bar next to copy, branch, and revert,
+ * because it acts on the reply it sits under. The arrows appear only once there
+ * is somewhere to go: a counter reading "1 / 1" on every reply is noise.
+ */
+function RoleplaySwipeActions({ controls }: { controls: RoleplaySwipeControls | null }) {
+  if (!controls?.turn) return null
+
+  const total = controls.turn.alternatives.length
+  // The live reply sits one past the captured ones, so the count includes it
+  // before the next regenerate archives it.
+  const shown = Math.min(controls.turn.activeAlternative + 1, Math.max(total, 1))
+  const canGoBack = controls.turn.activeAlternative > 0
+  const canGoForward = controls.turn.activeAlternative < total - 1
+
+  return (
+    <>
+      {total > 1 ? (
+        <>
+          <MessageAction tooltip="Previous reply">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Previous reply"
+              disabled={controls.busy || !canGoBack}
+              onClick={() => controls.onSelectAlternative(-1)}
+            >
+              <ChevronLeft />
+            </Button>
+          </MessageAction>
+          <span className="text-muted-foreground px-1 text-xs tabular-nums">
+            {shown} / {total}
+          </span>
+          <MessageAction tooltip="Next reply">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Next reply"
+              disabled={controls.busy || !canGoForward}
+              onClick={() => controls.onSelectAlternative(1)}
+            >
+              <ChevronRight />
+            </Button>
+          </MessageAction>
+        </>
+      ) : null}
+      <MessageAction tooltip="Regenerate">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Regenerate"
+          disabled={controls.busy}
+          onClick={controls.onSwipe}
+        >
+          <RefreshCw />
+        </Button>
+      </MessageAction>
+    </>
+  )
+}
+
 function MessageGroup({
   items,
   messages,
   isStreaming,
 }: AssistantMessageGroupProps) {
-  const { onRevertToUserMessage, onForkAtMessage, showThinking } = useMessageList()
+  const { onRevertToUserMessage, onForkAtMessage, showThinking, roleplaySwipe } = useMessageList()
   const lastItem = items[items.length - 1]
   // Branch/revert must target a real server-side message id. Synthetic
   // client-side messages (e.g. session errors) don't exist on the server and
@@ -1136,6 +1220,7 @@ function MessageGroup({
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2 px-2 opacity-0 transition-opacity duration-150 group-hover/message-group:opacity-100 md:px-8">
           <MessageActions className="flex gap-0">
             <CopyMessageButton messages={renderableItems.map((item) => item.message)} />
+            <RoleplaySwipeActions controls={roleplaySwipe} />
             {lastRealItem ? (
               <>
                 <MessageAction tooltip="Branch in new chat">
@@ -1180,6 +1265,7 @@ export function shouldShowMessageListLoading(status: ThreadStatus, messageCount:
 }
 
 export function MessageList({ messages, status, retryStatus }: MessageListProps) {
+  const { roleplay } = useMessageList()
   const isStreaming = status === "streaming" || status === "retrying"
   const showLoading = shouldShowMessageListLoading(status, messages.length)
   const items = React.useMemo(() => groupMessages(messages, status), [messages, status]);
@@ -1191,7 +1277,12 @@ export function MessageList({ messages, status, retryStatus }: MessageListProps)
 
   return (
     <div className={cn("flex flex-col gap-2 @container/message-list")}>
-      {messages.length === 0 && <TaskSuggestions className="mx-auto w-full max-w-3xl shrink-0 px-3 pb-3 md:px-5 md:pb-5 grow" />}
+      {/* Roleplay sessions deny every tool, so "try building X" suggestions are
+          offers the session cannot accept. An empty one is a scene about to
+          open, not a blank slate needing prompts. */}
+      {messages.length === 0 && !roleplay && (
+        <TaskSuggestions className="mx-auto w-full max-w-3xl shrink-0 px-3 pb-3 md:px-5 md:pb-5 grow" />
+      )}
 
       {items.map((item) => {
         if (isMessageGroup(item)) {

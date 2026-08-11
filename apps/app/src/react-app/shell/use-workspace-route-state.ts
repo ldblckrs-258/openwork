@@ -301,7 +301,10 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
           }));
         }
         try {
-          const response = await endpoint.client.listSessions(endpoint.workspaceId, { limit: 200 });
+          // Roots only. Child sessions are subagent and background work — the
+          // roleplay generation calls create one per run — and listing them puts
+          // work the user did not start in their sidebar.
+          const response = await endpoint.client.listSessions(endpoint.workspaceId, { limit: 200, roots: true });
           const fetchedItems = response.items ?? [];
           const workspaceRoot = normalizeDirectoryPath(workspace.path ?? "");
           const items = workspaceRoot && !isRemoteOpenworkWorkspace
@@ -613,6 +616,9 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
   }, [selectedWorkspaceId]);
   const handleRuntimeSessionCreated = useCallback((session: Session) => {
     if (!selectedWorkspaceId) return;
+    // The list is roots-only, so a child session arriving by event must not be
+    // merged into it — that would put back exactly what the fetch filters out.
+    if (session.parentID) return;
     rememberPendingCreatedSession(selectedWorkspaceId, session.id);
     setSessionsByWorkspaceId((current) => {
       const list = current[selectedWorkspaceId] ?? [];

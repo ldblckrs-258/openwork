@@ -27,7 +27,7 @@ export function PersonaEditor({ persona, saving, onSave }: PersonaEditorProps) {
 
   return (
     <form
-      className="flex flex-col gap-4 px-10 py-6 max-w-3xl"
+      className="flex flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (!draft.persona.name.trim()) {

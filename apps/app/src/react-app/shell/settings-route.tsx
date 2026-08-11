@@ -1338,7 +1338,9 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
             return { workspaceId: workspace.id, sessions: [], error: null as string | null };
           }
           try {
-            const response = await endpoint.client.listSessions(endpoint.workspaceId, { limit: 200 });
+            // Roots only, matching the sidebar: child sessions are subagent and
+            // background work rather than conversations the user started.
+            const response = await endpoint.client.listSessions(endpoint.workspaceId, { limit: 200, roots: true });
             const workspaceRoot = normalizeDirectoryPath(workspace.path ?? "");
             const items = workspaceRoot && !endpoint.isRemote
               ? (response.items ?? []).filter((session) =>

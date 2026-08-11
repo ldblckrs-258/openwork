@@ -12,9 +12,12 @@ import {
   bindSession,
   clearSessionBinding,
   deleteCharacter,
+  deleteLorebook,
   deleteMemory,
   deletePersona,
   listCharacterMemories,
+  listLorebooks,
+  writeLorebook,
   listCharacterRevisions,
   listCharacters,
   listPersonas,
@@ -375,7 +378,58 @@ describe("schema version", () => {
     expect(await schemaVersionOf("roleplay_sessions", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_turns", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_memories", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+    await writeLorebook(config, WORKSPACE_A, lorebookRecord("lore_versioned"));
+
     expect(await schemaVersionOf("roleplay_revisions", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+    expect(await schemaVersionOf("roleplay_lorebooks", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+  });
+});
+
+function lorebookRecord(id: string, characterIds: string[] = []) {
+  return {
+    id,
+    name: "Ashfell",
+    description: "",
+    entries: [
+      {
+        uid: "lbe_0",
+        keys: ["harbour"],
+        content: "The harbour freezes over.",
+        extensions: {},
+        enabled: true,
+        insertion_order: 0,
+      },
+    ],
+    characterIds,
+    source: "authored" as const,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+describe("lorebooks", () => {
+  test("a book round-trips with its entries and attachments", async () => {
+    await writeLorebook(config, WORKSPACE_A, lorebookRecord("lore_round_trip", ["char_1"]));
+
+    const listed = await listLorebooks(config, WORKSPACE_A);
+    const stored = listed.find((entry) => entry.id === "lore_round_trip");
+
+    expect(stored?.entries[0]?.keys).toEqual(["harbour"]);
+    expect(stored?.characterIds).toEqual(["char_1"]);
+  });
+
+  test("books are isolated per workspace", async () => {
+    await writeLorebook(config, WORKSPACE_A, lorebookRecord("lore_isolated"));
+
+    expect((await listLorebooks(config, WORKSPACE_B)).some((entry) => entry.id === "lore_isolated")).toBe(false);
+  });
+
+  test("deleting removes the book outright, since nothing renders from it later", async () => {
+    await writeLorebook(config, WORKSPACE_A, lorebookRecord("lore_deleted"));
+
+    expect(await deleteLorebook(config, WORKSPACE_A, "lore_deleted")).toBe(true);
+    expect((await listLorebooks(config, WORKSPACE_A)).some((entry) => entry.id === "lore_deleted")).toBe(false);
+    expect(await deleteLorebook(config, WORKSPACE_A, "lore_deleted")).toBe(false);
   });
 });
 

@@ -53,12 +53,14 @@ describe("determinism", () => {
 describe("composition order", () => {
   test("sections appear in the exported order", () => {
     const output = compile({ system_prompt: "SYSTEM-MARKER" }, {
+      lorebookBefore: [{ text: "LOREBOOK-BEFORE-MARKER" }],
       lorebook: [{ text: "LOREBOOK-MARKER" }],
       memories: [{ text: "MEMORY-MARKER" }],
     });
 
     const positions = [
       output.indexOf("SYSTEM-MARKER"),
+      output.indexOf("LOREBOOK-BEFORE-MARKER"),
       output.indexOf("# Aria"),
       output.indexOf("## Personality"),
       output.indexOf("## Scenario"),

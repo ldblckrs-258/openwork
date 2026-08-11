@@ -65,6 +65,15 @@ const DEFAULT_OPENCODE_REQUEST_TIMEOUT_MS = 10_000;
 const OAUTH_OPENCODE_REQUEST_TIMEOUT_MS = 5 * 60_000;
 const MCP_AUTH_OPENCODE_REQUEST_TIMEOUT_MS = 90_000;
 const SESSION_LONG_RUNNING_URL_RE = /\/session\/[^/?#]+\/(?:command|prompt_async|summarize)(?:[?#]|$)/;
+/**
+ * The synchronous prompt. It holds the connection open for the whole
+ * completion, so the default timeout would abort any real generation — measured
+ * at 4s against a deliberately slow provider, and minutes against a real one.
+ *
+ * Method-checked because the same URL is the message *list* when read with GET,
+ * and a read that can never time out is a hang with no way back.
+ */
+const SESSION_PROMPT_URL_RE = /\/session\/[^/?#]+\/message(?:[?#]|$)/;
 
 function getRequestUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;
@@ -73,9 +82,17 @@ function getRequestUrl(input: RequestInfo | URL): string {
   return String(input);
 }
 
-function resolveRequestTimeoutMs(input: RequestInfo | URL, fallbackMs: number): number {
+function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (typeof Request !== "undefined" && input instanceof Request) return input.method.toUpperCase();
+  return (init?.method ?? "GET").toUpperCase();
+}
+
+function resolveRequestTimeoutMs(input: RequestInfo | URL, fallbackMs: number, init?: RequestInit): number {
   const url = getRequestUrl(input);
   if (SESSION_LONG_RUNNING_URL_RE.test(url)) {
+    return 0;
+  }
+  if (requestMethod(input, init) === "POST" && SESSION_PROMPT_URL_RE.test(url)) {
     return 0;
   }
   if (/\/provider\/oauth\//.test(url) || /\/mcp\/auth\/callback\b/.test(url)) {
@@ -221,7 +238,7 @@ async function fetchWithTimeout(
   init: RequestInit | undefined,
   timeoutMs: number,
 ) {
-  const effectiveTimeoutMs = resolveRequestTimeoutMs(input, timeoutMs);
+  const effectiveTimeoutMs = resolveRequestTimeoutMs(input, timeoutMs, init);
   if (!Number.isFinite(effectiveTimeoutMs) || effectiveTimeoutMs <= 0) {
     return fetchImpl(input, init);
   }

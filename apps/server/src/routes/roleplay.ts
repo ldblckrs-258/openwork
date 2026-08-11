@@ -2,12 +2,14 @@ import { ApiError } from "../errors.js";
 import {
   roleplayCardRevisionSchema,
   roleplayCharacterRecordSchema,
+  roleplayLorebookRecordSchema,
   roleplayMemoryRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
   type RoleplayCardRevision,
   type RoleplayCharacterRecord,
+  type RoleplayLorebookRecord,
   type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
   type RoleplaySessionBinding,
@@ -17,16 +19,19 @@ import {
   bindSession,
   clearSessionBinding,
   deleteCharacter,
+  deleteLorebook,
   deleteMemory,
   deletePersona,
   listCharacterMemories,
   listCharacterRevisions,
   listCharacters,
+  listLorebooks,
   listPersonas,
   readCharacter,
   listSessionTurns,
   readSessionBinding,
   writeCharacter,
+  writeLorebook,
   writeMemory,
   writePersona,
   writeRevision,
@@ -93,6 +98,29 @@ function parseMemory(body: Record<string, unknown>): RoleplayMemoryRecord {
   if (!parsed.success) {
     throw new ApiError(400, "invalid_memory", `Invalid memory: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
   }
+  return parsed.data;
+}
+
+function submittedEntryCount(value: unknown): number {
+  if (typeof value !== "object" || value === null) return 0;
+  const entries = Reflect.get(value, "entries");
+  return Array.isArray(entries) ? entries.length : 0;
+}
+
+function parseLorebook(body: Record<string, unknown>): RoleplayLorebookRecord {
+  const parsed = roleplayLorebookRecordSchema.safeParse(body.lorebook);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_lorebook", `Invalid lorebook: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+  }
+
+  // The schema is lenient by design, so a malformed entry makes the whole
+  // `entries` array fall back to empty rather than failing. Silently storing a
+  // book with none of its entries is the one outcome nobody could debug, so a
+  // count that shrank is rejected instead.
+  if (submittedEntryCount(body.lorebook) !== parsed.data.entries.length) {
+    throw new ApiError(400, "invalid_lorebook_entry", "One or more lorebook entries are invalid");
+  }
+
   return parsed.data;
 }
 
@@ -236,6 +264,32 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     requireClientScope(ctx, "collaborator");
     const workspace = await resolveWorkspace(config, ctx.params.id);
     return jsonResponse({ deleted: await deleteMemory(config, workspace.id, ctx.params.memoryId) });
+  });
+
+  // Lorebooks are workspace-level, not character-level: one world commonly
+  // serves several characters, and the attachment lives on the book.
+  addRoute(routes, "GET", "/workspace/:id/roleplay/lorebooks", "client", async (ctx) => {
+    const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
+    return jsonResponse({ lorebooks: await listLorebooks(config, workspace.id) });
+  });
+
+  addRoute(routes, "PUT", "/workspace/:id/roleplay/lorebooks/:lorebookId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const lorebook = parseLorebook(body);
+    if (lorebook.id !== ctx.params.lorebookId) {
+      throw new ApiError(400, "lorebook_id_mismatch", "Lorebook id in the body does not match the path");
+    }
+    return jsonResponse({ lorebook: await writeLorebook(config, workspace.id, lorebook) });
+  });
+
+  addRoute(routes, "DELETE", "/workspace/:id/roleplay/lorebooks/:lorebookId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    return jsonResponse({ deleted: await deleteLorebook(config, workspace.id, ctx.params.lorebookId) });
   });
 
   // Revisions are append-only. Undoing one writes the restored card through the

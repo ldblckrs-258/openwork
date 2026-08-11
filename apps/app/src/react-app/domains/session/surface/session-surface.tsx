@@ -4,7 +4,7 @@ import type { UIMessage } from "ai";
 import type { RoleplayTurnRecord } from "@openwork/types/roleplay";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
-import { Check, Minimize2 } from "lucide-react";
+import { Check, LoaderCircle, Minimize2 } from "lucide-react";
 import { toast } from "@/components/ui/sonner";
 
 import { captureAnalyticsEvent } from "@/app/lib/analytics";
@@ -43,7 +43,6 @@ import type {
 import { compileDraftText } from "@/app/roleplay/blocks";
 import { activeAlternativeText } from "@/app/roleplay/swipe";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
-import { SwipeControls } from "@/react-app/domains/roleplay/components/swipe-controls";
 import { StorySoFar } from "@/react-app/domains/roleplay/components/story-so-far";
 import { ReactSessionComposer } from "./composer/composer";
 import { useSessionModelSelection } from "./session-model-store";
@@ -308,7 +307,8 @@ export type RoleplayControls = {
   revisionBusy: boolean;
   onSwipe: () => void;
   onSelectAlternative: (offset: number) => void;
-  onBranch: () => void;
+  /** Given the fork boundary id, so "branch here" means the message it was clicked on. */
+  onBranch: (messageId?: string) => void;
   onSaveStorySoFar: (value: string) => void;
   /** Proposes memories from this conversation. User-triggered: it costs a completion. */
   onExtractMemories: () => void;
@@ -970,7 +970,10 @@ export function SessionSurface(props: SessionSurfaceProps) {
         )
       : base;
 
-    const greeting = props.roleplay?.greeting.trim();
+    // While the opening is being written there is deliberately no greeting on
+    // screen. The card's would be replaced within seconds, and a scene opened
+    // twice reads as the character repeating itself.
+    const greeting = props.roleplay?.greetingPending ? "" : props.roleplay?.greeting.trim();
     if (!greeting) return withAlternative;
     return [
       {
@@ -981,7 +984,31 @@ export function SessionSurface(props: SessionSurfaceProps) {
       } satisfies UIMessage,
       ...withAlternative,
     ];
-  }, [baseRenderedMessages, evalMarkdownMessages, props.roleplay?.greeting, props.roleplayControls?.turn, props.sessionId]);
+  }, [
+    baseRenderedMessages,
+    evalMarkdownMessages,
+    props.roleplay?.greeting,
+    props.roleplay?.greetingPending,
+    props.roleplayControls?.turn,
+    props.sessionId,
+  ]);
+  /**
+   * The names `{{char}}` and `{{user}}` resolve to while reading this session.
+   *
+   * Substituted at render rather than in storage: a greeting is the card's
+   * `first_mes` verbatim, so rewriting it on the way in would bake one persona's
+   * name into the card and corrupt an export.
+   */
+  const roleplayRenderContext = useMemo(
+    () =>
+      props.roleplay
+        ? {
+            charName: props.roleplay.characterName || "Character",
+            userName: props.roleplay.persona.name || "User",
+          }
+        : null,
+    [props.roleplay],
+  );
   const seedMarkdownPrimitiveControlAction = useMemo<OpenworkControlAction | null>(() => {
     if (!import.meta.env.DEV) return null;
 
@@ -1907,10 +1934,19 @@ export function SessionSurface(props: SessionSurfaceProps) {
   }, [props.onRevertToMessage, props.sessionId]);
 
   const handleForkAtMessage = useCallback((messageId: string) => {
+    // A roleplay branch has to rebind the fork to the same character, or it
+    // opens as an ordinary chat with a roleplay transcript in it. That handler
+    // forks the whole session rather than at a message — a difference worth
+    // accepting, because the alternative is a silently broken branch.
     // OpenCode's fork copies messages strictly before the given id, so pass
     // the next real message to make the branch include the clicked message.
-    props.onForkAtMessage?.(resolveForkBoundaryId(renderedMessages, messageId), props.sessionId);
-  }, [props.onForkAtMessage, props.sessionId, renderedMessages]);
+    const boundary = resolveForkBoundaryId(renderedMessages, messageId);
+    if (props.roleplayControls) {
+      props.roleplayControls.onBranch(boundary ?? undefined);
+      return;
+    }
+    props.onForkAtMessage?.(boundary, props.sessionId);
+  }, [props.onForkAtMessage, props.roleplayControls, props.sessionId, renderedMessages]);
 
   const handleEditUserMessage = useCallback((messageId: string, text: string) => {
     // Preserve the boundary with the draft; the destructive revert is deferred
@@ -2118,6 +2154,17 @@ export function SessionSurface(props: SessionSurfaceProps) {
                       onMcpReconnect={handleMcpReconnect}
                       onMcpReopenAuthorization={handleMcpReopenAuthorization}
                       onMcpRetry={handleMcpRetry}
+                      roleplaySwipe={
+                        props.roleplayControls
+                          ? {
+                              turn: props.roleplayControls.turn,
+                              busy: props.roleplayControls.busy || chatStreaming,
+                              onSwipe: props.roleplayControls.onSwipe,
+                              onSelectAlternative: props.roleplayControls.onSelectAlternative,
+                            }
+                          : null
+                      }
+                      roleplay={roleplayRenderContext}
                     >
                       <MessageList
                         messages={renderedMessages}
@@ -2177,15 +2224,20 @@ export function SessionSurface(props: SessionSurfaceProps) {
             </button>
           </div>
         ) : null}
+        {props.roleplay?.greetingPending ? (
+          <div className="text-muted-foreground flex items-center gap-2 px-4 pb-2 text-sm">
+            <LoaderCircle className="size-4 animate-spin" />
+            <span>
+              {props.roleplay.characterName || "The character"} is writing the opening. The conversation starts when
+              it lands.
+            </span>
+          </div>
+        ) : null}
         {props.roleplayControls ? (
           <>
-            <SwipeControls
-              turn={props.roleplayControls.turn}
-              busy={props.roleplayControls.busy || chatStreaming}
-              onSwipe={props.roleplayControls.onSwipe}
-              onSelectAlternative={props.roleplayControls.onSelectAlternative}
-              onBranch={props.roleplayControls.onBranch}
-            />
+            {/* Regenerate and alternative navigation are not here: they act on a
+                reply, so they live in that message group's own action bar
+                alongside copy, branch, and revert. */}
             <StorySoFar
               value={props.roleplayControls.storySoFar}
               saving={props.roleplayControls.storySaving}
@@ -2210,7 +2262,11 @@ export function SessionSurface(props: SessionSurfaceProps) {
         steering={steering}
         submissionPreparing={preparingCloudTools}
         queuedCount={queuedDrafts.length}
-        disabled={model.transitionState !== "idle" || Boolean(props.modelUnavailable)}
+        disabled={
+          model.transitionState !== "idle" ||
+          Boolean(props.modelUnavailable) ||
+          Boolean(props.roleplay?.greetingPending)
+        }
         roleplayBlocks={Boolean(props.roleplay)}
         roleplayCharacterName={props.roleplay?.characterName || undefined}
         modelUnavailable={Boolean(props.modelUnavailable)}

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tansta
 import type {
   RoleplayCardRevision,
   RoleplayCharacterRecord,
+  RoleplayLorebookRecord,
   RoleplayMemoryRecord,
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
@@ -214,6 +215,53 @@ export function useDeleteRoleplayMemory(endpoint: ResolvedWorkspaceEndpoint | nu
           queryKey: roleplayMemoriesQueryKey(endpoint.workspaceId, input.characterId),
         });
       }
+    },
+  });
+}
+
+export function roleplayLorebooksQueryKey(workspaceId: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "lorebooks", workspaceId] as const;
+}
+
+/**
+ * Read on every roleplay session, because attached books are matched against the
+ * transcript on every turn. An empty library must therefore be a cheap cached
+ * empty list rather than an error, exactly as memories are.
+ */
+export function useRoleplayLorebooks(endpoint: ResolvedWorkspaceEndpoint | null) {
+  return useQuery({
+    queryKey: roleplayLorebooksQueryKey(endpoint?.workspaceId ?? ""),
+    enabled: Boolean(endpoint),
+    staleTime: 30_000,
+    queryFn: async () => {
+      if (!endpoint) return [];
+      return (await endpoint.client.listRoleplayLorebooks(endpoint.workspaceId)).lorebooks;
+    },
+  });
+}
+
+export function useSaveRoleplayLorebook(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (lorebook: RoleplayLorebookRecord) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return (await endpoint.client.putRoleplayLorebook(endpoint.workspaceId, lorebook)).lorebook;
+    },
+    onSuccess: async () => {
+      if (endpoint) await queryClient.invalidateQueries({ queryKey: roleplayLorebooksQueryKey(endpoint.workspaceId) });
+    },
+  });
+}
+
+export function useDeleteRoleplayLorebook(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (lorebookId: string) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return (await endpoint.client.deleteRoleplayLorebook(endpoint.workspaceId, lorebookId)).deleted;
+    },
+    onSuccess: async () => {
+      if (endpoint) await queryClient.invalidateQueries({ queryKey: roleplayLorebooksQueryKey(endpoint.workspaceId) });
     },
   });
 }

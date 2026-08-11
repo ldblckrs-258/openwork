@@ -1,4 +1,9 @@
-import type { CharacterCardV2, RoleplayMemoryRecord, RoleplayPersona } from "@openwork/types/roleplay";
+import type {
+  CharacterCardV2,
+  RoleplayLorebookRecord,
+  RoleplayMemoryRecord,
+  RoleplayPersona,
+} from "@openwork/types/roleplay";
 
 /**
  * What the chat surface needs to know to render a session as roleplay.
@@ -23,6 +28,16 @@ export type RoleplaySurfaceState = {
   storySoFar: string;
   /** Approved memories for this character; budgeted, then compiled into `system`. */
   memories: RoleplayMemoryRecord[];
+  /**
+   * Set while the opening line is being written for this session.
+   *
+   * Blocks the composer and replaces the greeting with an indicator: the card's
+   * greeting is about to be replaced, so showing it and accepting a reply
+   * against it would start the scene twice.
+   */
+  greetingPending: boolean;
+  /** Lorebooks attached to this character; matched against the transcript each turn. */
+  lorebooks: RoleplayLorebookRecord[];
   /** Which character the session is bound to, so a memory approved mid-chat knows where to go. */
   characterId: string;
 };

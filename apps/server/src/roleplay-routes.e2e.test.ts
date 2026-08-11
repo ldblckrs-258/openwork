@@ -401,6 +401,76 @@ describe("roleplay routes", () => {
     expect(other.revisions).toEqual([]);
   });
 
+  test("a lorebook round-trips through create, list, and delete", async () => {
+    const { base, token } = await startOpenworkServer();
+    const lorebook = {
+      id: "lore_1",
+      name: "Ashfell",
+      description: "",
+      entries: [
+        {
+          uid: "lbe_0",
+          keys: ["harbour"],
+          content: "The harbour freezes over.",
+          extensions: {},
+          enabled: true,
+          insertion_order: 100,
+        },
+      ],
+      characterIds: ["char_1"],
+      source: "imported",
+      importFormat: "sillytavern",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const written = await fetch(`${base}/workspace/ws_1/roleplay/lorebooks/lore_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ lorebook }),
+    });
+    expect(written.status).toBe(200);
+
+    const listed = await (await fetch(`${base}/workspace/ws_1/roleplay/lorebooks`, { headers: auth(token) })).json();
+    expect(listed.lorebooks).toHaveLength(1);
+    expect(listed.lorebooks[0].entries[0].keys).toEqual(["harbour"]);
+    expect(listed.lorebooks[0].characterIds).toEqual(["char_1"]);
+
+    const deleted = await (await fetch(`${base}/workspace/ws_1/roleplay/lorebooks/lore_1`, {
+      method: "DELETE",
+      headers: auth(token),
+    })).json();
+    expect(deleted.deleted).toBe(true);
+
+    const afterDelete = await (await fetch(`${base}/workspace/ws_1/roleplay/lorebooks`, { headers: auth(token) })).json();
+    expect(afterDelete.lorebooks).toEqual([]);
+  });
+
+  test("an entry with no uid is rejected at the edge", async () => {
+    // The uid is what an editor row and a trace line are keyed by; a book stored
+    // without one would render with colliding keys and untraceable entries.
+    const { base, token } = await startOpenworkServer();
+
+    const response = await fetch(`${base}/workspace/ws_1/roleplay/lorebooks/lore_bad`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({
+        lorebook: {
+          id: "lore_bad",
+          name: "",
+          description: "",
+          entries: [{ keys: ["a"], content: "x", extensions: {}, enabled: true, insertion_order: 0 }],
+          characterIds: [],
+          source: "authored",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+  });
+
   test("characters are isolated per workspace", async () => {
     const { base, token } = await startOpenworkServer();
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_a`, {

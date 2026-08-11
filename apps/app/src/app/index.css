@@ -137,6 +137,17 @@
   --chart-3: var(--indigo-9);
   --chart-4: var(--violet-9);
   --chart-5: var(--purple-9);
+  /*
+    Roleplay transcript voices. Step 11 of each Radix scale is the one tuned for
+    text on the app background, and every scale swaps itself under
+    [data-theme="dark"], so one definition covers both themes.
+
+    Narration is deliberately absent: it inherits the ordinary foreground, which
+    is what makes the other three read as departures from it.
+  */
+  --rp-speech: var(--amber-11);
+  --rp-action: var(--slate-11);
+  --rp-ooc: var(--iris-11);
   --radius: 0.45rem;
   --sidebar: var(--slate-2);
   --sidebar-foreground: var(--slate-12);

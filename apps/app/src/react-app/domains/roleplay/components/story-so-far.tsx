@@ -1,7 +1,9 @@
 /** @jsxImportSource react */
+import { Brain, LoaderCircle, ScrollText, Wand2 } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { MessageAction } from "@/components/ui/message";
 import { Textarea } from "@/components/ui/textarea";
 import { STORY_SO_FAR_GUIDANCE } from "@/app/roleplay/compact-policy";
 
@@ -17,6 +19,17 @@ type StorySoFarProps = {
   onProposeRevision: () => void;
 };
 
+/**
+ * The session-level roleplay actions, and the continuity notes behind one of them.
+ *
+ * Icon-only with tooltips, matching the message action bar: these sit above the
+ * composer on every roleplay turn, and three labelled buttons there read as a
+ * second toolbar competing with the one under each reply.
+ *
+ * Both model-calling actions are buttons rather than anything automatic. Each
+ * costs a completion over the whole transcript, and running them unasked spends
+ * the user's money on a review dialog they may not want.
+ */
 export function StorySoFar({
   value,
   saving,
@@ -36,26 +49,50 @@ export function StorySoFar({
 
   if (!open) {
     return (
-      <div className="flex items-center justify-between gap-3 px-4 pb-2">
+      <div className="text-muted-foreground flex items-center justify-between gap-3 px-4 pb-1">
         {compacted ? (
-          <p className="text-muted-foreground text-xs">
+          <p className="text-xs">
             This conversation was compacted. Anything the summary dropped survives only in the story so far.
           </p>
         ) : (
           <span />
         )}
-        <div className="flex items-center gap-1">
-          {/* Deliberately a button rather than something that fires on its own:
-              extraction is an extra completion over the whole transcript. */}
-          <Button type="button" variant="ghost" size="sm" disabled={memoryBusy} onClick={onExtractMemories}>
-            {memoryBusy ? "Thinking…" : "Remember this"}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" disabled={revisionBusy} onClick={onProposeRevision}>
-            {revisionBusy ? "Reading back…" : "Suggest card edits"}
-          </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
-            Story so far
-          </Button>
+        <div className="flex items-center gap-0">
+          <MessageAction tooltip={memoryBusy ? "Working out what to remember…" : "Remember this conversation"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Remember this conversation"
+              disabled={memoryBusy}
+              onClick={onExtractMemories}
+            >
+              {memoryBusy ? <LoaderCircle className="animate-spin" /> : <Brain />}
+            </Button>
+          </MessageAction>
+          <MessageAction tooltip={revisionBusy ? "Reading the conversation back…" : "Suggest edits to the card"}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Suggest edits to the card"
+              disabled={revisionBusy}
+              onClick={onProposeRevision}
+            >
+              {revisionBusy ? <LoaderCircle className="animate-spin" /> : <Wand2 />}
+            </Button>
+          </MessageAction>
+          <MessageAction tooltip="Story so far">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Story so far"
+              onClick={() => setOpen(true)}
+            >
+              <ScrollText />
+            </Button>
+          </MessageAction>
         </div>
       </div>
     );

@@ -26,6 +26,7 @@ import { splitExampleMessages, substituteMacros, type MacroContext } from "./mac
  */
 export const PROMPT_COMPOSITION_ORDER = [
   "system_prompt",
+  "lorebook_before",
   "description",
   "personality",
   "scenario",
@@ -51,7 +52,12 @@ export type CompilePromptOptions = {
   /** V3 `nickname`, when the card carried one; overrides `{{char}}` without changing the display name. */
   charName?: string;
   defaultSystemPrompt?: string;
-  /** Supplied by the lorebook phase, already ordered `constant` first. */
+  /**
+   * Matched entries whose `position` is `before_char`, which the V2 spec places
+   * ahead of the character definition rather than after it.
+   */
+  lorebookBefore?: BudgetedInjection[];
+  /** Matched entries positioned after the character definition — the spec's default. */
   lorebook?: BudgetedInjection[];
   /** Supplied by the character-memory phase. */
   memories?: BudgetedInjection[];
@@ -80,19 +86,32 @@ export function compilePrompt(
   const macros: MacroContext = { char, user };
   const expand = (text: string, context: MacroContext = macros) => substituteMacros(text, context).trim();
 
+  // One budget call over all three sources, not one per source: they compete for
+  // the same ceiling, so ranking them separately would let the split decide the
+  // outcome rather than the priorities.
+  const before = options.lorebookBefore ?? [];
+  const after = options.lorebook ?? [];
   const budgeted = applyContextualInjectionBudget(
-    [...(options.lorebook ?? []), ...(options.memories ?? [])],
+    [...before, ...after, ...(options.memories ?? [])],
     options.budgetChars,
   );
-  const lorebookCount = options.lorebook?.length ?? 0;
-  const keptLorebook = budgeted.kept.filter((_, slot) => (budgeted.keptIndices[slot] ?? 0) < lorebookCount);
-  const keptMemories = budgeted.kept.filter((_, slot) => (budgeted.keptIndices[slot] ?? 0) >= lorebookCount);
+  const afterStart = before.length;
+  const memoryStart = afterStart + after.length;
+  const keptAt = (low: number, high: number) =>
+    budgeted.kept.filter((_, slot) => {
+      const index = budgeted.keptIndices[slot] ?? 0;
+      return index >= low && index < high;
+    });
+  const keptBefore = keptAt(0, afterStart);
+  const keptLorebook = keptAt(afterStart, memoryStart);
+  const keptMemories = keptAt(memoryStart, Number.POSITIVE_INFINITY);
 
   const appDefault = options.defaultSystemPrompt ?? DEFAULT_ROLEPLAY_SYSTEM_PROMPT;
   const examples = splitExampleMessages(data.mes_example).map((example) => expand(example)).filter(Boolean);
 
   const sections: Record<PromptSection, string> = {
     system_prompt: expand(data.system_prompt, { ...macros, original: appDefault }) || appDefault,
+    lorebook_before: block("# World Info", keptBefore.map((entry) => expand(entry)).join("\n\n").trim()),
     description: block(`# ${char}`, expand(data.description)),
     personality: block("## Personality", expand(data.personality)),
     scenario: block("## Scenario", expand(data.scenario)),

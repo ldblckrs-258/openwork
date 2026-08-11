@@ -187,6 +187,15 @@ export const roleplaySessionBindingSchema = z.object({
    * tone and unresolved beats across a compaction the app does not control.
    */
   storySoFar: looseString,
+  /**
+   * The line this conversation opened with, when it is not the card's.
+   *
+   * Empty means the card's `first_mes`. A generated opening lives here rather
+   * than on the card because it belongs to one session: the card's greeting was
+   * written for a first meeting, and once the character has memories each new
+   * conversation deserves its own opening without overwriting the author's.
+   */
+  greeting: looseString,
   boundAt: timestamp,
 })
 export type RoleplaySessionBinding = z.infer<typeof roleplaySessionBindingSchema>
@@ -259,6 +268,54 @@ export const roleplayMemoryRecordSchema = z.object({
   updatedAt: timestamp,
 })
 export type RoleplayMemoryRecord = z.infer<typeof roleplayMemoryRecordSchema>
+
+/**
+ * One lorebook entry as stored by this app.
+ *
+ * The spec-shaped fields keep their snake_case names on purpose: an entry is
+ * written straight back out on export, and renaming them here would mean a
+ * translation layer in both directions that could only ever lose fidelity.
+ *
+ * `uid` is the app's own addition. The V2 `id` field is an optional number that
+ * community files reuse, leave out, or collide on, so it cannot key an editor
+ * row or a trace line — this can.
+ */
+export const roleplayLorebookEntrySchema = characterBookEntryV3Schema.extend({
+  uid: idString,
+})
+export type RoleplayLorebookEntry = z.infer<typeof roleplayLorebookEntrySchema>
+
+/**
+ * A world the character knows about.
+ *
+ * Stored as its own record rather than inside the card, because the files people
+ * actually trade — SillyTavern world info, NovelAI lorebooks, Agnai memory books
+ * — are not cards, and because one world usually serves several characters. A
+ * card-embedded `character_book` becomes one of these on import, attached to the
+ * character it arrived with.
+ *
+ * The book-level fields are camelCase where the entries are snake_case: these
+ * are this app's settings for the book, not fields that round-trip to a card.
+ */
+export const roleplayLorebookRecordSchema = z.object({
+  id: idString,
+  name: looseString,
+  description: looseString,
+  /** How many recent messages keys are matched against. Absent means the app default. */
+  scanDepth: looseNumber,
+  /** The book's own ceiling in tokens, as the file declared it. Never raises the app's own ceiling. */
+  tokenBudget: looseNumber,
+  recursiveScanning: looseBoolean,
+  entries: z.array(roleplayLorebookEntrySchema).catch([]),
+  /** Characters this book is attached to. A book attached to nothing is inert. */
+  characterIds: looseStringArray,
+  source: roleplayCharacterSourceSchema.catch("authored"),
+  /** Which platform's file this came from, for the library to show. */
+  importFormat: looseOptionalString,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+})
+export type RoleplayLorebookRecord = z.infer<typeof roleplayLorebookRecordSchema>
 
 /**
  * A card as it stood before a revision was applied.

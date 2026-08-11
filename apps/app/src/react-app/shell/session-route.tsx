@@ -42,6 +42,13 @@ import {
   selectAlternative,
 } from "@/app/roleplay/swipe";
 import { compileBlocks } from "@/app/roleplay/blocks";
+import { lorebooksForCharacter, MAX_SCAN_DEPTH, toScanMessages } from "@/app/roleplay/lorebook";
+import {
+  buildGreetingRequest,
+  parseGeneratedGreeting,
+  sessionGreeting,
+  type RoleplayOpening,
+} from "@/app/roleplay/greeting";
 import { decideCompaction, MIN_TURNS_BEFORE_COMPACT } from "@/app/roleplay/compact-policy";
 import type { GenerationRequest } from "@/app/roleplay/generation/prompts";
 import { createMemory, createMemoryId } from "@/app/roleplay/memory";
@@ -63,6 +70,7 @@ import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
   useApplyRoleplayRevision,
   useBindRoleplaySession,
+  useRoleplayLorebooks,
   useRoleplayMemories,
   useRoleplayPersonas,
   useRoleplaySessionBinding,
@@ -717,6 +725,16 @@ export function SessionRoute() {
     selectedWorkspaceEndpoint,
     roleplayBindingQuery.data?.binding?.characterId ?? null,
   );
+  const roleplayLorebooksQuery = useRoleplayLorebooks(selectedWorkspaceEndpoint);
+  /**
+   * The session whose opening line is still being written.
+   *
+   * Kept in memory rather than on the binding: a flag on disk outlives the app,
+   * so a crash mid-generation would leave a conversation permanently blocked
+   * with no way to clear it. Losing this on reload costs nothing — the card's
+   * greeting comes back and the user can chat.
+   */
+  const [greetingPendingSessionId, setGreetingPendingSessionId] = useState<string | null>(null);
   const roleplaySurface = useMemo<RoleplaySurfaceState | null>(() => {
     const binding = roleplayBindingQuery.data?.binding;
     const character = roleplayBindingQuery.data?.character;
@@ -727,12 +745,20 @@ export function SessionRoute() {
       characterName: character.card.data.name,
       card: character.card,
       persona: persona?.persona ?? { name: "", description: "" },
-      greeting: character.card.data.first_mes,
+      greeting: sessionGreeting(binding.greeting, character.card),
       storySoFar: binding.storySoFar,
       memories: roleplayMemoriesQuery.data ?? [],
+      greetingPending: greetingPendingSessionId === binding.sessionId,
+      lorebooks: lorebooksForCharacter(roleplayLorebooksQuery.data ?? [], binding.characterId),
       characterId: binding.characterId,
     };
-  }, [roleplayBindingQuery.data, roleplayMemoriesQuery.data, roleplayPersonasQuery.data]);
+  }, [
+    greetingPendingSessionId,
+    roleplayBindingQuery.data,
+    roleplayLorebooksQuery.data,
+    roleplayMemoriesQuery.data,
+    roleplayPersonasQuery.data,
+  ]);
   const roleplayTurnsQuery = useRoleplayTurns(selectedWorkspaceEndpoint, roleplaySurface ? selectedSessionId : null);
   const saveRoleplayTurn = useSaveRoleplayTurn(selectedWorkspaceEndpoint);
   const saveRoleplayMemory = useSaveRoleplayMemory(selectedWorkspaceEndpoint);
@@ -1359,7 +1385,7 @@ export function SessionRoute() {
             onProposeRevision: () => void handleProposeRevision(),
             onSwipe: () => void handleRoleplaySwipe(),
             onSelectAlternative: (offset: number) => handleRoleplaySelectAlternative(offset),
-            onBranch: () => void handleRoleplayBranch(),
+            onBranch: (messageId?: string) => void handleRoleplayBranch(messageId),
             onSaveStorySoFar: (value: string) => void handleSaveStorySoFar(value),
           }
         : null,
@@ -1515,6 +1541,18 @@ export function SessionRoute() {
                 // read from the global preference, every tool is denied
                 // explicitly, and `system` composes onto the environment context
                 // instead of replacing it. See `app/roleplay/turn.ts`.
+                // Lorebook keys are matched against the recent transcript plus
+                // the message being sent, so an entry keyed on something the
+                // user just typed fires for the reply to that message rather
+                // than for the one after it.
+                const scanMessages = roleplaySurface?.lorebooks.length
+                  ? [
+                      ...toScanMessages(
+                        unwrap(await opencodeClient.session.messages({ sessionID: targetSessionId, limit: MAX_SCAN_DEPTH })) ?? [],
+                      ),
+                      { role: "user" as const, text },
+                    ]
+                  : [];
                 const roleplayTurn = roleplaySurface
                   ? buildRoleplayTurn({
                       card: roleplaySurface.card,
@@ -1525,6 +1563,8 @@ export function SessionRoute() {
                       // strings reads as the model ignoring the user's notes.
                       storySoFar: roleplaySurface.storySoFar,
                       memories: roleplaySurface.memories,
+                      lorebooks: roleplaySurface.lorebooks,
+                      scanMessages,
                       directorText: draft.directorText,
                       envContext: envSystemContext ?? null,
                     })
@@ -1697,6 +1737,19 @@ export function SessionRoute() {
     opencodeClient,
     providerConnectedIds,
     roleplaySurface,
+    // Every value `roleplayControls` closes over. Without these the controls
+    // object is frozen at the last unrelated recompute: the busy flags never
+    // reach the buttons, so a running generation showed no spinner and stayed
+    // clickable, and the swipe counter never followed the stored turn.
+    latestRoleplayTurn,
+    roleplayBusy,
+    roleplayCompacted,
+    memoryBusy,
+    revisionBusy,
+    bindRoleplaySession.isPending,
+    // The handlers themselves are declared below this memo, so they cannot be
+    // listed here. They are reached through these values instead: every one of
+    // them changes when a roleplay interaction starts or finishes.
     selectedAgent,
     selectedSessionId,
     selectedModelUnavailable,
@@ -2011,12 +2064,6 @@ export function SessionRoute() {
   // Starting a roleplay chat is "create an ordinary session, then bind it". The
   // binding is what every roleplay behaviour keys off, so nothing else in the
   // session lifecycle has to know this session was created differently.
-  const handleStartRoleplayChat = useCallback(async (characterId: string, personaId: string) => {
-    if (!selectedWorkspaceId) return;
-    const sessionId = await handleCreateTaskInWorkspace(selectedWorkspaceId);
-    if (!sessionId) return;
-    await bindRoleplaySession.mutateAsync({ sessionId, characterId, personaId, storySoFar: "", boundAt: Date.now() });
-  }, [bindRoleplaySession, handleCreateTaskInWorkspace, selectedWorkspaceId]);
 
   /**
    * Run one character-generation call and hand back its raw text.
@@ -2029,36 +2076,150 @@ export function SessionRoute() {
    * The tool boundary comes in with the request and is spread last, so nothing
    * here can widen it — this route never builds a tool map of its own.
    */
-  const handleRunGeneration = useCallback(async (request: GenerationRequest): Promise<string> => {
+  // Stable ids so the "working…" toast is replaced by its own outcome instead of
+  // stacking a second one under it.
+  const ROLEPLAY_MEMORY_TOAST_ID = "roleplay-memory-extract";
+  const ROLEPLAY_GREETING_TOAST_ID = "roleplay-greeting";
+  const ROLEPLAY_REVISION_TOAST_ID = "roleplay-card-revision";
+
+  const handleRunGeneration = useCallback(async (
+    request: GenerationRequest,
+    parentSessionId?: string,
+  ): Promise<string> => {
     if (!opencodeClient) throw new Error("No workspace is connected.");
     const directory = selectedWorkspaceRoot || undefined;
     const { text, ...promptOptions } = request;
-    const session = unwrap(await opencodeClient.session.create({ directory, title: "Character generation" }));
+    // A child session, not a root one. A prompt needs a session, but this is not
+    // a conversation the user is having: as a root session it appeared in the
+    // sidebar, and being the newest it could become the selected one.
+    // The parent is what keeps this out of the sidebar: only root sessions are
+    // listed. The caller passes one explicitly because the library page has no
+    // selected session, and without a parent this scratch session is created as
+    // a root and shows up as a conversation the user never started.
+    // Last resort when neither is available — generating from the character
+    // library, where nothing is selected. Attaching a scratch session to an
+    // unrelated conversation is not meaningful, but it is invisible: children
+    // are never listed, and the alternative is a stray "Character generation"
+    // row in the user's sidebar.
+    const parent = parentSessionId ?? selectedSessionId ?? (sessionsByWorkspaceId[selectedWorkspaceId] ?? [])[0]?.id;
+    const session = unwrap(
+      await opencodeClient.session.create({
+        directory,
+        title: "Character generation",
+        ...(parent ? { parentID: parent } : {}),
+      }),
+    );
+    const reply = unwrap(
+      await opencodeClient.session.prompt({
+        sessionID: session.id,
+        ...(directory ? { directory } : {}),
+        parts: [{ type: "text", text }],
+        model: local.prefs.defaultModel ?? undefined,
+        ...promptOptions,
+      }),
+    );
+    // Deliberately not deleted. `session.prompt` resolves before the engine has
+    // finished flushing the message's parts, so removing the session here raced
+    // those writes and failed them ("insert into part ..."). It also left the
+    // app pointed at a session id that no longer existed whenever this one had
+    // become the selected session. A child session is not listed, so leaving it
+    // costs a row and nothing else.
+    return (reply.parts ?? [])
+      .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  }, [
+    local.prefs.defaultModel,
+    opencodeClient,
+    selectedSessionId,
+    selectedWorkspaceId,
+    selectedWorkspaceRoot,
+    sessionsByWorkspaceId,
+  ]);
+
+  /**
+   * Start a roleplay session, opening on the line the user chose.
+   *
+   * A generated opening is written in a second binding update rather than being
+   * awaited before the first: the session is created, bound, and navigated to
+   * immediately, so a slow generation leaves the user in their conversation
+   * reading the card's greeting instead of staring at a spinner. When it lands,
+   * the greeting is replaced in place.
+   */
+  const handleStartRoleplayChat = useCallback(async (
+    characterId: string,
+    personaId: string,
+    opening: RoleplayOpening = { kind: "card" },
+  ) => {
+    if (!selectedWorkspaceId) return;
+    const sessionId = await handleCreateTaskInWorkspace(selectedWorkspaceId);
+    if (!sessionId) return;
+    const binding = {
+      sessionId,
+      characterId,
+      personaId,
+      storySoFar: "",
+      greeting: opening.kind === "alternate" ? opening.text : "",
+      boundAt: Date.now(),
+    };
+    await bindRoleplaySession.mutateAsync(binding);
+    if (opening.kind !== "generate") return;
+
+    const endpoint = selectedWorkspaceEndpoint;
+    if (!endpoint || !opencodeClient) return;
+    // The transcript shows a written-in indicator and the composer is blocked
+    // while this runs, so no toast: the state is already on screen, in the
+    // place the greeting will appear.
+    setGreetingPendingSessionId(sessionId);
     try {
-      const reply = unwrap(
-        await opencodeClient.session.prompt({
-          sessionID: session.id,
-          ...(directory ? { directory } : {}),
-          parts: [{ type: "text", text }],
-          model: local.prefs.defaultModel ?? undefined,
-          ...promptOptions,
+      const [character, memories, personas] = await Promise.all([
+        endpoint.client.getRoleplayCharacter(endpoint.workspaceId, characterId),
+        endpoint.client.listRoleplayMemories(endpoint.workspaceId, characterId),
+        endpoint.client.listRoleplayPersonas(endpoint.workspaceId),
+      ]);
+      const persona = personas.personas.find((entry) => entry.id === personaId) ?? personas.personas[0];
+      const raw = await handleRunGeneration(
+        buildGreetingRequest({
+          card: character.character.card,
+          persona: persona?.persona ?? { name: "", description: "" },
+          ...(character.character.charSubstitutionName ? { charName: character.character.charSubstitutionName } : {}),
+          memories: memories.memories,
         }),
+        // The conversation this opening belongs to. Without it the generation
+        // session is created as a root and appears in the sidebar.
+        sessionId,
       );
-      return (reply.parts ?? [])
-        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
-        .map((part) => part.text)
-        .join("");
-    } finally {
-      // A leaked scratch session is visible clutter in the sidebar, so this runs
-      // even when the prompt failed. Its own failure is not worth surfacing on
-      // top of whatever the caller is already reporting.
-      try {
-        await opencodeClient.session.delete({ sessionID: session.id, ...(directory ? { directory } : {}) });
-      } catch (error) {
-        console.warn("[roleplay] could not remove the generation session", error);
+      const parsed = parseGeneratedGreeting(raw);
+      if (!parsed.ok) {
+        // Falling back to the card's greeting, which is what unblocking reveals.
+        toast.error("Could not write an opening", {
+          id: ROLEPLAY_GREETING_TOAST_ID,
+          description: `${parsed.error} The character's usual greeting is being used instead.`,
+        });
+        return;
       }
+      await bindRoleplaySession.mutateAsync({ ...binding, greeting: parsed.text });
+    } catch (error) {
+      toast.error("Could not write an opening", {
+        id: ROLEPLAY_GREETING_TOAST_ID,
+        description:
+          error instanceof Error
+            ? error.message
+            : "The character's usual greeting is being used instead.",
+      });
+    } finally {
+      // Unblocks whatever happened. A conversation stuck behind a failed
+      // generation would be worse than one that opens on the card's greeting.
+      setGreetingPendingSessionId(null);
     }
-  }, [local.prefs.defaultModel, opencodeClient, selectedWorkspaceRoot]);
+  }, [
+    bindRoleplaySession,
+    handleCreateTaskInWorkspace,
+    handleRunGeneration,
+    opencodeClient,
+    selectedWorkspaceEndpoint,
+    selectedWorkspaceId,
+  ]);
 
   /**
    * Regenerate the latest reply.
@@ -2117,6 +2278,11 @@ export function SessionRoute() {
         greeting: roleplaySurface.greeting,
         storySoFar: roleplaySurface.storySoFar,
         memories: roleplaySurface.memories,
+        lorebooks: roleplaySurface.lorebooks,
+        // The transcript as it stood before the revert, plus the message being
+        // replayed: a regenerate has to match the same entries the original send
+        // did, or the character loses world knowledge it just used.
+        scanMessages: [...toScanMessages(existing ?? []), { role: "user" as const, text: plan.userText }],
         directorText: compiled.directorText,
         envContext: envSystemContext ?? null,
       });
@@ -2126,31 +2292,38 @@ export function SessionRoute() {
       // would quietly regenerate against the provider's default reasoning mode,
       // which reads as the character changing rather than as a lost setting.
       const swipeVariant = sessionModelSelection ? sessionModelSelection.variant : modelVariantValue;
-      const result = await opencodeClient.session.promptAsync({
-        sessionID: selectedSessionId,
-        // Never `parts: []` — the engine accepts it and blanks the user's message.
-        parts: [{ type: "text", text: plan.userText }],
-        model: sessionModelSelection?.model ?? local.prefs.defaultModel ?? undefined,
-        ...(swipeVariant ? { variant: swipeVariant } : {}),
-        ...rebuilt.prompt,
-      });
-      if (result.error) throw new Error(serializeSDKError(result.error));
+      // The synchronous prompt, not `promptAsync`. Measured against the real
+      // engine: `prompt_async` answers 204 in ~11ms with nothing yet written,
+      // so reading the transcript straight afterwards captured the *previous*
+      // state — an empty reply and a stale message id, which the next
+      // regenerate would then try to revert at. The sync call returns the
+      // settled assistant message itself, ids included.
+      const regenerated = unwrap(
+        await opencodeClient.session.prompt({
+          sessionID: selectedSessionId,
+          // Never `parts: []` — the engine accepts it and blanks the user's message.
+          parts: [{ type: "text", text: plan.userText }],
+          model: sessionModelSelection?.model ?? local.prefs.defaultModel ?? undefined,
+          ...(swipeVariant ? { variant: swipeVariant } : {}),
+          ...rebuilt.prompt,
+        }),
+      );
 
       // The engine minted new ids for both the user message and the reply. The
       // turn has to follow them or the next regenerate reverts at a message that
-      // no longer exists.
+      // no longer exists. The reply carries its own id; the user message id is
+      // read back from the settled transcript.
       const settled = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId, limit: 4 })) ?? [];
       const newUser = [...settled].reverse().find((entry) => entry.info.role === "user");
-      const newReply = [...settled].reverse().find((entry) => entry.info.role === "assistant");
-      if (newUser && newReply) {
+      if (newUser) {
         await saveRoleplayTurn.mutateAsync(
           applySwipeResult(plan.turn, {
             userMessageId: newUser.info.id,
-            replyText: (newReply.parts ?? [])
+            replyText: (regenerated.parts ?? [])
               .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
               .map((part) => part.text)
               .join(""),
-            replyMessageId: newReply.info.id,
+            replyMessageId: regenerated.info.id,
             now: Date.now(),
           }),
         );
@@ -2199,22 +2372,46 @@ export function SessionRoute() {
     if (next !== latestRoleplayTurn) void saveRoleplayTurn.mutateAsync(next);
   }, [latestRoleplayTurn, saveRoleplayTurn]);
 
-  const handleRoleplayBranch = useCallback(async () => {
+  /**
+   * Branch a roleplay conversation.
+   *
+   * The engine's fork copies the transcript and knows nothing about roleplay, so
+   * the branch has to be bound to the same character here. Without that it opens
+   * as an ordinary chat holding a roleplay transcript: no greeting, no compiled
+   * character prompt, no tool denial — which is why every fork entry point in a
+   * roleplay session routes through this rather than through the generic one.
+   *
+   * The binding is written *before* navigating. Arriving first would render the
+   * branch unbound for a beat and flash the greeting away.
+   */
+  const handleRoleplayBranch = useCallback(async (messageId?: string) => {
     if (!opencodeClient || !selectedSessionId || !selectedWorkspaceEndpoint || !roleplaySurface) return;
+    const binding = roleplayBindingQuery.data?.binding;
+    if (!binding) {
+      // Refusing rather than forking unbound: a branch with no character is not
+      // a roleplay branch, and the user would only find out by looking at it.
+      toast.error("Could not branch this conversation", {
+        description: "This session is not bound to a character.",
+      });
+      return;
+    }
     try {
-      const forked = await forkSession(opencodeClient, selectedSessionId);
-      // The fork copies the transcript but knows nothing about roleplay, so the
-      // branch has to be bound too or it opens as an ordinary chat.
-      const binding = roleplayBindingQuery.data?.binding;
-      if (binding) {
-        await selectedWorkspaceEndpoint.client.putRoleplaySessionBinding(selectedWorkspaceEndpoint.workspaceId, {
-          ...binding,
-          sessionId: forked.id,
-          boundAt: Date.now(),
-        });
-      }
-      await refreshRouteState();
+      const forked = await forkSession(opencodeClient, selectedSessionId, messageId);
+      await selectedWorkspaceEndpoint.client.putRoleplaySessionBinding(selectedWorkspaceEndpoint.workspaceId, {
+        ...binding,
+        sessionId: forked.id,
+        boundAt: Date.now(),
+      });
+      // Registered the same way an ordinary branch is, so the sidebar shows it
+      // immediately instead of waiting for the next list refresh.
+      writeLastSessionFor(selectedWorkspaceId, forked.id);
+      rememberPendingCreatedSession(selectedWorkspaceId, forked.id);
+      setSessionsByWorkspaceId((current) => ({
+        ...current,
+        [selectedWorkspaceId]: [forked, ...(current[selectedWorkspaceId] ?? [])],
+      }));
       navigateToWorkspaceSession(selectedWorkspaceId, forked.id);
+      void refreshRouteState();
     } catch (error) {
       toast.error("Could not branch this conversation", {
         description: error instanceof Error ? error.message : undefined,
@@ -2224,6 +2421,7 @@ export function SessionRoute() {
     navigateToWorkspaceSession,
     opencodeClient,
     refreshRouteState,
+    rememberPendingCreatedSession,
     roleplayBindingQuery.data,
     roleplaySurface,
     selectedSessionId,
@@ -2244,7 +2442,16 @@ export function SessionRoute() {
    */
   const handleExtractMemories = useCallback(async () => {
     if (!opencodeClient || !selectedSessionId || !roleplaySurface) return;
+    if (memoryBusy) return;
     setMemoryBusy(true);
+    // A model call over the whole transcript takes as long as it takes. The
+    // button's own spinner is a small icon, so the work is announced here too
+    // and the outcome replaces this toast rather than stacking under it.
+    toast.info("Reading the conversation…", {
+      id: ROLEPLAY_MEMORY_TOAST_ID,
+      description: "Working out what the character should remember.",
+      duration: Infinity,
+    });
     try {
       const history = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId })) ?? [];
       const transcript = buildTranscriptText(
@@ -2261,7 +2468,11 @@ export function SessionRoute() {
         roleplaySurface.persona.name || "User",
       );
       if (!transcript.trim()) {
-        toast.info("Nothing to remember yet", { description: "This conversation has no exchanges." });
+        toast.info("Nothing to remember yet", {
+          id: ROLEPLAY_MEMORY_TOAST_ID,
+          description: "This conversation has no exchanges.",
+          duration: 4_000,
+        });
         return;
       }
 
@@ -2270,19 +2481,26 @@ export function SessionRoute() {
       );
       const parsed = parseMemoryProposals(raw, roleplaySurface.memories);
       if (!parsed.ok) {
-        toast.error("Could not read what the model proposed", { description: parsed.error });
+        toast.error("Could not read what the model proposed", {
+          id: ROLEPLAY_MEMORY_TOAST_ID,
+          description: parsed.error,
+          duration: 6_000,
+        });
         return;
       }
+      toast.dismiss(ROLEPLAY_MEMORY_TOAST_ID);
       setMemoryProposals(parsed.proposals);
       setMemoryReviewOpen(true);
     } catch (error) {
       toast.error("Could not work out what to remember", {
+        id: ROLEPLAY_MEMORY_TOAST_ID,
         description: error instanceof Error ? error.message : undefined,
+        duration: 6_000,
       });
     } finally {
       setMemoryBusy(false);
     }
-  }, [handleRunGeneration, opencodeClient, roleplaySurface, selectedSessionId]);
+  }, [handleRunGeneration, memoryBusy, opencodeClient, roleplaySurface, selectedSessionId]);
 
   const handleKeepMemories = useCallback(async (texts: string[]) => {
     if (!roleplaySurface) return;
@@ -2325,7 +2543,13 @@ export function SessionRoute() {
    */
   const handleProposeRevision = useCallback(async () => {
     if (!opencodeClient || !selectedSessionId || !roleplaySurface) return;
+    if (revisionBusy) return;
     setRevisionBusy(true);
+    toast.info("Reading the conversation back…", {
+      id: ROLEPLAY_REVISION_TOAST_ID,
+      description: "Looking for what the card gets wrong.",
+      duration: Infinity,
+    });
     try {
       const directorNotes = (roleplayTurnsQuery.data ?? [])
         .flatMap((turn) => turn.blocks)
@@ -2348,7 +2572,11 @@ export function SessionRoute() {
         roleplaySurface.persona.name || "User",
       );
       if (!transcript.trim() && directorNotes.length === 0) {
-        toast.info("Nothing to go on yet", { description: "This conversation has no exchanges." });
+        toast.info("Nothing to go on yet", {
+          id: ROLEPLAY_REVISION_TOAST_ID,
+          description: "This conversation has no exchanges.",
+          duration: 4_000,
+        });
         return;
       }
 
@@ -2357,19 +2585,26 @@ export function SessionRoute() {
       );
       const parsed = parseRevisionProposals(raw, roleplaySurface.card);
       if (!parsed.ok) {
-        toast.error("Could not read what the model proposed", { description: parsed.error });
+        toast.error("Could not read what the model proposed", {
+          id: ROLEPLAY_REVISION_TOAST_ID,
+          description: parsed.error,
+          duration: 6_000,
+        });
         return;
       }
+      toast.dismiss(ROLEPLAY_REVISION_TOAST_ID);
       setRevisionProposals(parsed.proposals);
       setRevisionReviewOpen(true);
     } catch (error) {
       toast.error("Could not work out what to change", {
+        id: ROLEPLAY_REVISION_TOAST_ID,
         description: error instanceof Error ? error.message : undefined,
+        duration: 6_000,
       });
     } finally {
       setRevisionBusy(false);
     }
-  }, [handleRunGeneration, opencodeClient, roleplaySurface, roleplayTurnsQuery.data, selectedSessionId]);
+  }, [handleRunGeneration, opencodeClient, revisionBusy, roleplaySurface, roleplayTurnsQuery.data, selectedSessionId]);
 
   const handleApplyRevision = useCallback(async (approved: RevisableField[]) => {
     const character = roleplayBindingQuery.data?.character;

@@ -9,6 +9,7 @@ import { normalizeBaseUrl } from "@openwork/types/url";
 import type {
   RoleplayCardRevision,
   RoleplayCharacterRecord,
+  RoleplayLorebookRecord,
   RoleplayMemoryRecord,
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
@@ -1609,6 +1610,24 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
       requestJson<{ deleted: boolean }>(
         baseUrl,
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/memories/${encodeURIComponent(memoryId)}`,
+        { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
+      ),
+    listRoleplayLorebooks: (workspaceId: string) =>
+      requestJson<{ lorebooks: RoleplayLorebookRecord[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/lorebooks`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplayLorebook: (workspaceId: string, lorebook: RoleplayLorebookRecord) =>
+      requestJson<{ lorebook: RoleplayLorebookRecord }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/lorebooks/${encodeURIComponent(lorebook.id)}`,
+        { token, hostToken, method: "PUT", body: { lorebook }, timeoutMs: timeouts.config },
+      ),
+    deleteRoleplayLorebook: (workspaceId: string, lorebookId: string) =>
+      requestJson<{ deleted: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/lorebooks/${encodeURIComponent(lorebookId)}`,
         { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
       ),
     listRoleplayRevisions: (workspaceId: string, characterId: string) =>
