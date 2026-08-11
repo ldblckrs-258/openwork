@@ -26,6 +26,7 @@ import { PersonaEditor } from "./persona-editor";
 
 type RoleplayPageProps = {
   endpoint: ResolvedWorkspaceEndpoint | null;
+  onStartChat?: (characterId: string, personaId: string) => Promise<void>;
 };
 
 const FALLBACK_PERSONA: RoleplayPersona = { name: "", description: "" };
@@ -34,7 +35,7 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-export function RoleplayPage({ endpoint }: RoleplayPageProps) {
+export function RoleplayPage({ endpoint, onStartChat }: RoleplayPageProps) {
   const characters = useRoleplayCharacters(endpoint);
   const personas = useRoleplayPersonas(endpoint);
   const saveCharacter = useSaveRoleplayCharacter(endpoint);
@@ -81,6 +82,16 @@ export function RoleplayPage({ endpoint }: RoleplayPageProps) {
         loading={characters.isLoading}
         onCreate={() => setEditing(createBlankCharacter(createCharacterId(Date.now(), randomSuffix()), Date.now()))}
         onOpen={(character) => setEditing(character)}
+        onStartChat={onStartChat
+          ? (character) => {
+              // A character with no name compiles the fallback word "Character"
+              // into its own description, so the editor blocks that save; a
+              // chat cannot reach that state through the library.
+              void onStartChat(character.id, personaRecord.id).catch((error: unknown) =>
+                toast.error(error instanceof Error ? error.message : "Could not start the chat"),
+              );
+            }
+          : undefined}
         onDuplicate={(character) =>
           persist(duplicateCharacter(character, createCharacterId(Date.now(), randomSuffix()), Date.now()), "Character duplicated")
         }

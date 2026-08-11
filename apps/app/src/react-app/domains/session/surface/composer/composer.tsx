@@ -65,6 +65,10 @@ type ComposerProps = {
   submissionPreparing: boolean;
   queuedCount: number;
   disabled: boolean;
+  /** Roleplay session: install the per-line block triggers in the editor. */
+  roleplayBlocks?: boolean;
+  /** Named in the placeholder so a roleplay session reads as one before the first turn. */
+  roleplayCharacterName?: string;
   modelUnavailable?: boolean;
   modelUnavailableMessage?: string | null;
   organizationModelsEmpty?: boolean;
@@ -381,7 +385,9 @@ export function ReactSessionComposer(props: ComposerProps) {
   const mentionOpenNext = Boolean(mentionMatch);
   const mentionQuery = mentionMatch?.[1] ?? "";
   const nonDefaultAgents = useMemo(() => agents.filter(isNonDefaultAgent), [agents]);
-  const showAgentPicker = props.selectedAgent !== null || nonDefaultAgents.length > 0;
+  // A roleplay send pins its agent and ignores the saved preference entirely, so
+  // an agent picker here would report a choice that has no effect on the turn.
+  const showAgentPicker = !props.roleplayBlocks && (props.selectedAgent !== null || nonDefaultAgents.length > 0);
 
   useEffect(() => {
     setSlashOpen(slashOpenNext);
@@ -1230,7 +1236,10 @@ export function ReactSessionComposer(props: ComposerProps) {
                 previewUrl: attachment.previewUrl,
               }))}
               disabled={props.disabled}
-              placeholder={t("composer.placeholder")}
+              roleplayBlocks={props.roleplayBlocks}
+              placeholder={props.roleplayCharacterName
+                ? `Reply to ${props.roleplayCharacterName} — " speaks, * acts, [ steers`
+                : t("composer.placeholder")}
               onChange={props.onDraftChange}
               onSubmit={handleEditorSubmit}
               onExpandPastedText={handleExpandPastedText}

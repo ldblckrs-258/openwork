@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { RoleplayCharacterRecord, RoleplayPersonaRecord } from "@openwork/types/roleplay";
+import type { RoleplayCharacterRecord, RoleplayPersonaRecord, RoleplaySessionBinding } from "@openwork/types/roleplay";
 
 import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
 
@@ -99,6 +99,44 @@ export function useDeleteRoleplayPersona(endpoint: ResolvedWorkspaceEndpoint | n
     },
     onSuccess: async () => {
       if (endpoint) await queryClient.invalidateQueries({ queryKey: roleplayPersonasQueryKey(endpoint.workspaceId) });
+    },
+  });
+}
+
+export function roleplaySessionQueryKey(workspaceId: string, sessionId: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "session", workspaceId, sessionId] as const;
+}
+
+/**
+ * The binding decides whether a session is a roleplay session, which gates both
+ * the composer's block triggers and the send path's agent pin. It is therefore
+ * read on every session, so an unbound session must resolve to a cheap, cached
+ * "no" rather than an error.
+ */
+export function useRoleplaySessionBinding(endpoint: ResolvedWorkspaceEndpoint | null, sessionId: string | null) {
+  return useQuery({
+    queryKey: roleplaySessionQueryKey(endpoint?.workspaceId ?? "", sessionId ?? ""),
+    enabled: Boolean(endpoint) && Boolean(sessionId),
+    staleTime: 30_000,
+    queryFn: async () => {
+      if (!endpoint || !sessionId) return null;
+      return endpoint.client.getRoleplaySessionBinding(endpoint.workspaceId, sessionId);
+    },
+  });
+}
+
+export function useBindRoleplaySession(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (binding: RoleplaySessionBinding) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      const response = await endpoint.client.putRoleplaySessionBinding(endpoint.workspaceId, binding);
+      return response.binding;
+    },
+    onSuccess: async (binding) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({ queryKey: roleplaySessionQueryKey(endpoint.workspaceId, binding.sessionId) });
+      }
     },
   });
 }

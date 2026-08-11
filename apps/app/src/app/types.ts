@@ -7,6 +7,7 @@ import type {
   ProviderListResponse,
   Session,
 } from "@opencode-ai/sdk/v2/client";
+import type { RoleplayBlock } from "@openwork/types/roleplay";
 import type { createClient } from "./lib/opencode";
 import type { OpencodeConfigFile, WorkspaceInfo } from "./lib/desktop-types";
 
@@ -132,6 +133,20 @@ export type ComposerDraft = {
    * this includes the full pasted text instead.
    */
   resolvedText?: string;
+  /**
+   * Roleplay out-of-character steering for this turn.
+   *
+   * Kept off `parts` deliberately: steering that shares a channel with
+   * in-character content gets treated as scene content or echoed back. The send
+   * path merges this into the per-prompt `system` instead.
+   */
+  directorText?: string;
+  /**
+   * The authored roleplay blocks behind `text`, persisted per message so a
+   * regenerate can recompose the same turn — director text is not in the message
+   * history and would otherwise be lost on the first swipe.
+   */
+  blocks?: RoleplayBlock[];
   /** When set, draft is a slash command invocation */
   command?: { name: string; arguments: string } | undefined;
   /** User-message boundary to revert immediately before this draft is sent. */

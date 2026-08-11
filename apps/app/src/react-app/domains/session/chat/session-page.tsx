@@ -148,6 +148,8 @@ export type SessionPageSidebarProps = {
   onOpenCreateWorkspace: () => void;
   automationsActive?: boolean;
   onOpenAutomations?: () => void;
+  roleplayActive?: boolean;
+  onOpenRoleplay?: () => void;
   /** Opens the cross-session message search dialog (Cmd/Ctrl+Shift+F). */
   onOpenSessionSearch?: () => void;
   onReorderWorkspaces?: (workspaceIds: string[]) => void;
@@ -1048,6 +1050,8 @@ export function SessionPage(props: SessionPageProps) {
           onOpenSessionSearch={props.sidebar.onOpenSessionSearch}
           automationsActive={props.sidebar.automationsActive}
           onOpenAutomations={props.sidebar.onOpenAutomations}
+          roleplayActive={props.sidebar.roleplayActive}
+          onOpenRoleplay={props.sidebar.onOpenRoleplay}
           conversationHistory={{
             canGoBack: canGoBackInConversationHistory,
             canGoForward: canGoForwardInConversationHistory,

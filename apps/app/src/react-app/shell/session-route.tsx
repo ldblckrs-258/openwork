@@ -32,6 +32,15 @@ import {
   type ResolvedWorkspaceEndpoint,
 } from "@/app/lib/workspace-endpoint";
 import { buildOpenworkEnvRuntimeKey } from "@/app/lib/openwork-env-runtime";
+import type { RoleplayBlock } from "@openwork/types/roleplay";
+import { buildRoleplayTurn } from "@/app/roleplay/turn";
+import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
+import {
+  useBindRoleplaySession,
+  useRoleplayPersonas,
+  useRoleplaySessionBinding,
+} from "@/react-app/domains/roleplay/state/roleplay-queries";
+import { RoleplayPage } from "@/react-app/domains/roleplay/pages/roleplay-page";
 import {
   getDesktopHomeDir,
   joinDesktopPath,
@@ -293,6 +302,37 @@ function nextEvalUnavailableModel(current: ModelRef | null | undefined) {
 // `resolveWorkspaceEndpoint` in apps/app/src/app/lib/workspace-endpoint.ts.
 // Don't compose `<baseUrl>/workspace/<id>` here.
 
+/**
+ * Store the turn's authored blocks against the user message the engine just
+ * created.
+ *
+ * `promptAsync` answers 204 with no body, and inventing a message id client-side
+ * would collide with the engine's own ordering scheme, so the id is read back
+ * from the session instead. Failures are logged rather than thrown: losing the
+ * ability to replay a swipe is not a reason to fail a turn the user already sent.
+ */
+async function persistRoleplayBlocks(input: {
+  endpoint: ResolvedWorkspaceEndpoint | null;
+  listMessages: (sessionId: string) => Promise<Array<{ info: { id: string; role: string } }> | undefined>;
+  sessionId: string;
+  blocks: RoleplayBlock[];
+}) {
+  if (!input.endpoint) return;
+  try {
+    const messages = (await input.listMessages(input.sessionId)) ?? [];
+    const latestUser = [...messages].reverse().find((entry) => entry.info.role === "user");
+    if (!latestUser) return;
+    await input.endpoint.client.putRoleplayMessageBlocks(input.endpoint.workspaceId, {
+      messageId: latestUser.info.id,
+      sessionId: input.sessionId,
+      blocks: input.blocks,
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    console.warn("[roleplay] could not persist turn blocks", error);
+  }
+}
+
 async function draftToParts(
   draft: ComposerDraft,
   workspaceRoot: string,
@@ -461,6 +501,10 @@ export function SessionRoute() {
   const navigate = useNavigate();
   const location = useLocation();
   const automationsRouteRequested = /^\/automations(?:\/|$)/.test(location.pathname);
+  // The character library mounts here rather than as its own route so it reuses
+  // the workspace endpoint this route already resolved. Composing that URL by
+  // hand is the bug class `workspace-endpoint.ts` exists to prevent.
+  const roleplayRouteActive = /^\/roleplay(?:\/|$)/.test(location.pathname);
   const platform = usePlatform();
   const denAuth = useDenAuth();
   const { config: shellConfig } = useShellConfig();
@@ -562,7 +606,7 @@ export function SessionRoute() {
     runRemoteWorkspaceConnectionCheck,
   } = useWorkspaceRouteState({
     developerMode,
-    workspaceRoute: automationsRouteActive ? "automations" : "session",
+    workspaceRoute: automationsRouteActive ? "automations" : roleplayRouteActive ? "roleplay" : "session",
     onServerSettingsChanged: () => setOpenworkServerSettingsVersion((value) => value + 1),
     onHostInfo: setOpenworkServerHostInfoState,
   });
@@ -605,6 +649,22 @@ export function SessionRoute() {
     workspaceId: selectedWorkspaceEndpoint?.workspaceId ?? null,
     providerModel: cloudMcpProviderModel,
   });
+  const roleplayBindingQuery = useRoleplaySessionBinding(selectedWorkspaceEndpoint, selectedSessionId);
+  const roleplayPersonasQuery = useRoleplayPersonas(selectedWorkspaceEndpoint);
+  const bindRoleplaySession = useBindRoleplaySession(selectedWorkspaceEndpoint);
+  const roleplaySurface = useMemo<RoleplaySurfaceState | null>(() => {
+    const binding = roleplayBindingQuery.data?.binding;
+    const character = roleplayBindingQuery.data?.character;
+    if (!binding || !character) return null;
+    const personas = roleplayPersonasQuery.data ?? [];
+    const persona = personas.find((entry) => entry.id === binding.personaId) ?? personas[0];
+    return {
+      characterName: character.card.data.name,
+      card: character.card,
+      persona: persona?.persona ?? { name: "", description: "" },
+      greeting: character.card.data.first_mes,
+    };
+  }, [roleplayBindingQuery.data, roleplayPersonasQuery.data]);
   // Agent selection is persisted in local prefs (like the model variant) so
   // it survives reloads instead of silently falling back to "build" (#2101).
   const selectedAgent = local.prefs.selectedAgent;
@@ -1197,6 +1257,7 @@ export function SessionRoute() {
     // local server with the local `rem_*` id.
     return {
       workspaceRoot: selectedWorkspaceRoot,
+      roleplay: roleplaySurface,
       developerMode: false,
       modelLabel,
       onModelClick: (sessionId?: string) => {
@@ -1308,16 +1369,42 @@ export function SessionRoute() {
                   cacheKey: targetSessionId,
                   runtimeKey: environmentRuntimeKey,
                 });
+                // Roleplay sends take a different shape on the wire, and every
+                // part of it is load-bearing: the agent is pinned rather than
+                // read from the global preference, every tool is denied
+                // explicitly, and `system` composes onto the environment context
+                // instead of replacing it. See `app/roleplay/turn.ts`.
+                const roleplayTurn = roleplaySurface
+                  ? buildRoleplayTurn({
+                      card: roleplaySurface.card,
+                      persona: roleplaySurface.persona,
+                      greeting: roleplaySurface.greeting,
+                      directorText: draft.directorText,
+                      envContext: envSystemContext ?? null,
+                    })
+                  : null;
                 const result = await opencodeClient.session.promptAsync({
                   sessionID: targetSessionId,
                   parts,
                   model: sendModel ?? undefined,
-                  agent: selectedAgent ?? undefined,
                   ...(sendVariant ? { variant: sendVariant } : {}),
-                  ...(envSystemContext ? { system: envSystemContext } : {}),
+                  ...(roleplayTurn
+                    ? roleplayTurn.prompt
+                    : {
+                        agent: selectedAgent ?? undefined,
+                        ...(envSystemContext ? { system: envSystemContext } : {}),
+                      }),
                 });
                 if (result.error) {
                   throw new Error(serializeSDKError(result.error));
+                }
+                if (roleplayTurn && draft.blocks?.length) {
+                  void persistRoleplayBlocks({
+                    endpoint: selectedWorkspaceEndpoint,
+                    listMessages: async (sessionId) => (await opencodeClient.session.messages({ sessionID: sessionId, limit: 4 })).data,
+                    sessionId: targetSessionId,
+                    blocks: draft.blocks,
+                  });
                 }
                 // Remember what this conversation used last so returning to it
                 // (or splitting it beside another session) keeps its own model.
@@ -1461,6 +1548,7 @@ export function SessionRoute() {
     opencodeBaseUrl,
     opencodeClient,
     providerConnectedIds,
+    roleplaySurface,
     selectedAgent,
     selectedSessionId,
     selectedModelUnavailable,
@@ -1771,6 +1859,16 @@ export function SessionRoute() {
       return null;
     }
   }, [endpointForWorkspace, loading, navigateToWorkspaceSession, refreshCloudProviderSync, refreshRouteState, rememberPendingCreatedSession, retryingWorkspaceIds, selectedWorkspaceId, workspaces]);
+
+  // Starting a roleplay chat is "create an ordinary session, then bind it". The
+  // binding is what every roleplay behaviour keys off, so nothing else in the
+  // session lifecycle has to know this session was created differently.
+  const handleStartRoleplayChat = useCallback(async (characterId: string, personaId: string) => {
+    if (!selectedWorkspaceId) return;
+    const sessionId = await handleCreateTaskInWorkspace(selectedWorkspaceId);
+    if (!sessionId) return;
+    await bindRoleplaySession.mutateAsync({ sessionId, characterId, personaId, boundAt: Date.now() });
+  }, [bindRoleplaySession, handleCreateTaskInWorkspace, selectedWorkspaceId]);
 
   // Latest session-list state for prev/next session tab navigation. The
   // `options` field is updated by `onSessionTabsChange` from SessionPage so we
@@ -2551,9 +2649,11 @@ export function SessionRoute() {
           }}
         />
       }
-      primaryTitle={automationsRouteActive ? "Automations" : undefined}
+      primaryTitle={automationsRouteActive ? "Automations" : roleplayRouteActive ? "Characters" : undefined}
       primarySlot={automationsRouteActive ? (
         <AutomationsPage providerCatalog={providerCatalog} />
+      ) : roleplayRouteActive ? (
+        <RoleplayPage endpoint={selectedWorkspaceEndpoint ?? null} onStartChat={handleStartRoleplayChat} />
       ) : undefined}
       terminalOpen={terminalOpen}
       onTerminalOpenChange={setTerminalOpen}
@@ -2577,6 +2677,10 @@ export function SessionRoute() {
               navigate(automationsRoute());
             }
           : undefined,
+        roleplayActive: roleplayRouteActive,
+        onOpenRoleplay: () => {
+          navigate("/roleplay");
+        },
         onSelectWorkspace: async (workspaceId) => {
           if (workspaceId === selectedWorkspaceId) return true;
           setLegacySelectedWorkspaceId(workspaceId);

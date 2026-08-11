@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import * as React from "react";
-import { Copy, Drama, Plus, Trash2 } from "lucide-react";
+import { Copy, Drama, MessageCircle, Plus, Trash2 } from "lucide-react";
 import type { RoleplayCharacterRecord } from "@openwork/types/roleplay";
 
 import { Button } from "@/components/ui/button";
@@ -14,9 +14,10 @@ type CharacterListProps = {
   onOpen: (character: RoleplayCharacterRecord) => void;
   onDuplicate: (character: RoleplayCharacterRecord) => void;
   onDelete: (character: RoleplayCharacterRecord) => void;
+  onStartChat?: (character: RoleplayCharacterRecord) => void;
 };
 
-export function CharacterList({ characters, loading, onCreate, onOpen, onDuplicate, onDelete }: CharacterListProps) {
+export function CharacterList({ characters, loading, onCreate, onOpen, onDuplicate, onDelete, onStartChat }: CharacterListProps) {
   if (loading) {
     return (
       <div className="flex flex-col gap-2">
@@ -65,6 +66,12 @@ export function CharacterList({ characters, loading, onCreate, onOpen, onDuplica
                 {character.card.data.description || "No description yet."}
               </p>
             </button>
+            {onStartChat ? (
+              <Button type="button" size="sm" onClick={() => onStartChat(character)}>
+                <MessageCircle className="size-4" />
+                Chat
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="ghost"

@@ -70,7 +70,7 @@ import {
 
 export type UseWorkspaceRouteStateInput = {
   developerMode: boolean;
-  workspaceRoute?: "session" | "automations";
+  workspaceRoute?: "session" | "automations" | "roleplay";
   /** Invoked when the openwork-server settings-changed event fires (the route bumps its settings version). */
   onServerSettingsChanged: () => void;
   /** Receives the local openwork-server host info discovered during refresh. */
@@ -138,6 +138,14 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
     if (workspaceRoute === "automations") {
       if (/^\/automations(?:\/|$)/.test(location.pathname)) return;
       navigate(automationsRoute(), options);
+      return;
+    }
+    // Workspace-scoped destinations that are not sessions stay put when the
+    // workspace selection is normalised; without this the character library
+    // bounces straight back to the last session.
+    if (workspaceRoute === "roleplay") {
+      if (/^\/roleplay(?:\/|$)/.test(location.pathname)) return;
+      navigate("/roleplay", options);
       return;
     }
     navigateToWorkspaceSession(workspaceId, sessionId, options);

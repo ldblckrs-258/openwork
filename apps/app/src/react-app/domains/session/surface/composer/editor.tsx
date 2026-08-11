@@ -34,6 +34,8 @@ import {
   type NodeKey,
 } from "lexical";
 import type { InitialConfigType } from "@lexical/react/LexicalComposer.js";
+import { matchBlockMarker } from "@/app/roleplay/blocks";
+import { $createRoleplayBlockNode, RoleplayBlockNode, registerRoleplayBlockTriggers } from "./roleplay-block-node";
 import { decodeComposerMentionValue, encodeComposerMentionValue, type ComposerMentionKind } from "./mention-encoding";
 import { parseConnectSkillToken } from "./connect-skill-token";
 import { shouldCollapsePastedText, splitPastedText } from "./pasted-text";
@@ -54,6 +56,12 @@ type EditorProps = {
   pastedText?: PastedTextToken[];
   attachments?: ComposerAttachmentToken[];
   disabled: boolean;
+  /**
+   * Install the roleplay per-line block triggers. Undefined or false leaves the
+   * composer on exactly the code path every non-roleplay session already takes —
+   * the trigger logic is not merely inert, it is never registered.
+   */
+  roleplayBlocks?: boolean;
   placeholder: string;
   onChange: (value: string) => void;
   onSubmit: (options: { queue: boolean }) => void | Promise<void>;
@@ -658,14 +666,16 @@ type ComposerInlineTokenNode =
   | ComposerSlashCommandNode
   | ComposerSkillNode
   | ComposerPastedTextNode
-  | ComposerAttachmentNode;
+  | ComposerAttachmentNode
+  | RoleplayBlockNode;
 
 function isComposerInlineTokenNode(node: unknown): node is ComposerInlineTokenNode {
   return node instanceof ComposerMentionNode
     || node instanceof ComposerSlashCommandNode
     || node instanceof ComposerSkillNode
     || node instanceof ComposerPastedTextNode
-    || node instanceof ComposerAttachmentNode;
+    || node instanceof ComposerAttachmentNode
+    || node instanceof RoleplayBlockNode;
 }
 
 function setSelectionAfterNode(node: TextNode) {
@@ -688,16 +698,29 @@ function setSelectionBeforeNode(node: ComposerInlineTokenNode) {
   $setSelection(selection);
 }
 
+// A rebuilt line restores its block chip from the marker it was serialized as.
+// Only the leading marker is consumed: the rest of the line is ordinary text.
+function appendLine(paragraph: ReturnType<typeof $createParagraphNode>, line: string, roleplayBlocks: boolean) {
+  const marked = roleplayBlocks ? matchBlockMarker(line) : null;
+  if (marked) {
+    paragraph.append($createRoleplayBlockNode(marked.type));
+    if (marked.rest.length > 0) paragraph.append($createTextNode(marked.rest));
+    return;
+  }
+  if (line.length > 0) paragraph.append($createTextNode(line));
+}
+
 function appendSegmentWithNewlines(
   paragraph: ReturnType<typeof $createParagraphNode>,
   segment: string,
+  roleplayBlocks = false,
 ) {
   // Preserve newlines in plain text segments. A single paragraph cannot
   // render "\n" as a line break in contenteditable, so we split on "\n"
   // and start a new paragraph per line. Return the paragraph the caller
   // should keep appending to (i.e. the last one we produced).
   if (!segment.includes("\n")) {
-    paragraph.append($createTextNode(segment));
+    appendLine(paragraph, segment, roleplayBlocks);
     return paragraph;
   }
   const lines = segment.split("\n");
@@ -708,9 +731,7 @@ function appendSegmentWithNewlines(
       current.insertAfter(next);
       current = next;
     }
-    if (line.length > 0) {
-      current.append($createTextNode(line));
-    }
+    appendLine(current, line, roleplayBlocks);
   });
   return current;
 }
@@ -720,6 +741,7 @@ function setPrompt(
   mentions: Record<string, ComposerMentionKind>,
   pastedText?: PastedTextToken[],
   attachments?: ComposerAttachmentToken[],
+  roleplayBlocks = false,
 ) {
   const root = $getRoot();
   root.clear();
@@ -772,7 +794,7 @@ function setPrompt(
         continue;
       }
     }
-    paragraph = appendSegmentWithNewlines(paragraph, segment);
+    paragraph = appendSegmentWithNewlines(paragraph, segment, roleplayBlocks);
   }
 }
 
@@ -818,6 +840,7 @@ function SyncPlugin(props: {
   mentions: Record<string, ComposerMentionKind>;
   pastedText?: PastedTextToken[];
   attachments?: ComposerAttachmentToken[];
+  roleplayBlocks?: boolean;
   disabled: boolean;
 }) {
   const [editor] = useLexicalComposerContext();
@@ -851,7 +874,7 @@ function SyncPlugin(props: {
       // Double-check inside the update in case another queued update
       // changed the state between the read above and this callback.
       if (!forceRebuild && serializePromptFromRoot() === props.value) return;
-      setPrompt(props.value, props.mentions, props.pastedText, props.attachments);
+      setPrompt(props.value, props.mentions, props.pastedText, props.attachments, props.roleplayBlocks);
       // $getRoot().selectEnd() doesn't work when the last node is a
       // token (chip) — Lexical can't position a cursor inside a token,
       // so the selection collapses to position 0. Use element-level
@@ -865,7 +888,20 @@ function SyncPlugin(props: {
         $getRoot().selectEnd();
       }
     });
-  }, [editor, props.attachments, props.mentions, props.pastedText, props.value]);
+  }, [editor, props.attachments, props.mentions, props.pastedText, props.roleplayBlocks, props.value]);
+
+  return null;
+}
+
+/**
+ * Mounted only for roleplay sessions. When it is absent nothing registers the
+ * per-line trigger transform, so an ordinary chat composer cannot turn a
+ * quotation mark into a block no matter what the user types.
+ */
+function RoleplayBlockPlugin() {
+  const [editor] = useLexicalComposerContext();
+
+  useEffect(() => registerRoleplayBlockTriggers(editor), [editor]);
 
   return null;
 }
@@ -1237,9 +1273,9 @@ export const LexicalPromptEditor = forwardRef<LexicalPromptEditorHandle, EditorP
         throw error;
       },
         editable: !props.disabled,
-        nodes: [ComposerMentionNode, ComposerSlashCommandNode, ComposerSkillNode, ComposerPastedTextNode, ComposerAttachmentNode],
+        nodes: [ComposerMentionNode, ComposerSlashCommandNode, ComposerSkillNode, ComposerPastedTextNode, ComposerAttachmentNode, RoleplayBlockNode],
         editorState: () => {
-          setPrompt(props.value, props.mentions, props.pastedText, props.attachments);
+          setPrompt(props.value, props.mentions, props.pastedText, props.attachments, props.roleplayBlocks);
         },
       }),
     [],
@@ -1292,8 +1328,10 @@ export const LexicalPromptEditor = forwardRef<LexicalPromptEditorHandle, EditorP
           mentions={props.mentions}
           pastedText={props.pastedText}
           attachments={props.attachments}
+          roleplayBlocks={props.roleplayBlocks}
           disabled={props.disabled}
         />
+        {props.roleplayBlocks ? <RoleplayBlockPlugin /> : null}
         <SubmitPlugin onSubmit={props.onSubmit} disabled={props.disabled} />
         <PasteChipPlugin onPasteText={props.onPasteText} />
         <PastedTextExpandPlugin pastedText={props.pastedText} onExpandPastedText={props.onExpandPastedText} />

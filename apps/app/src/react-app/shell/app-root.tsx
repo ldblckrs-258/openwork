@@ -422,6 +422,14 @@ export function AppRoot() {
                 }
               />
               <Route
+                path="/roleplay"
+                element={
+                  <DevProfiler id="RoleplayRoute">
+                    <SessionRoute />
+                  </DevProfiler>
+                }
+              />
+              <Route
                 path="/workspace/:workspaceId/extensions/*"
                 element={
                   <DevProfiler id="SessionRoute">

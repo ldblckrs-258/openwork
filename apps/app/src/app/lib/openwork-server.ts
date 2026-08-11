@@ -6,7 +6,13 @@ import {
   type AgentContextDiagnosticsRequest,
 } from "@openwork/types/agent-context-diagnostics";
 import { normalizeBaseUrl } from "@openwork/types/url";
-import type { RoleplayCharacterRecord, RoleplayPersonaRecord } from "@openwork/types/roleplay";
+import type {
+  RoleplayBlock,
+  RoleplayCharacterRecord,
+  RoleplayMessageBlocksRecord,
+  RoleplayPersonaRecord,
+  RoleplaySessionBinding,
+} from "@openwork/types/roleplay";
 import {
   AGENT_CONTEXT_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
   requestAgentContextDiagnosticsPayload,
@@ -1555,6 +1561,36 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         baseUrl,
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/personas/${encodeURIComponent(personaId)}`,
         { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
+      ),
+    getRoleplaySessionBinding: (workspaceId: string, sessionId: string) =>
+      requestJson<{ binding: RoleplaySessionBinding | null; character: RoleplayCharacterRecord | null; characterDeleted: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplaySessionBinding: (workspaceId: string, binding: RoleplaySessionBinding) =>
+      requestJson<{ binding: RoleplaySessionBinding }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(binding.sessionId)}`,
+        { token, hostToken, method: "PUT", body: { binding }, timeoutMs: timeouts.config },
+      ),
+    deleteRoleplaySessionBinding: (workspaceId: string, sessionId: string) =>
+      requestJson<{ cleared: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}`,
+        { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
+      ),
+    getRoleplayMessageBlocks: (workspaceId: string, messageId: string) =>
+      requestJson<{ blocks: RoleplayBlock[] | null }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/messages/${encodeURIComponent(messageId)}/blocks`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplayMessageBlocks: (workspaceId: string, record: RoleplayMessageBlocksRecord) =>
+      requestJson<{ record: RoleplayMessageBlocksRecord }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/messages/${encodeURIComponent(record.messageId)}/blocks`,
+        { token, hostToken, method: "PUT", body: { record }, timeoutMs: timeouts.config },
       ),
     getSessionGroups: (workspaceId: string) =>
       requestJson<{ state: OpenworkSessionGroupState; updatedAt: number | null }>(

@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Clock3,
+  Drama,
   ChevronRight,
   Columns2,
   FolderPlus,
@@ -848,6 +849,8 @@ export type AppSidebarProps = {
   onOpenCreateWorkspace: () => void;
   automationsActive?: boolean;
   onOpenAutomations?: () => void;
+  roleplayActive?: boolean;
+  onOpenRoleplay?: () => void;
   /** Opens the cross-session message search dialog (Cmd/Ctrl+Shift+F). */
   onOpenSessionSearch?: () => void;
   /** Back/forward across recently viewed conversations, rendered at the top of the sidebar. */
@@ -1147,6 +1150,14 @@ export function AppSidebar(props: AppSidebarProps) {
                 icon={Clock3}
                 label="Automations"
                 onSelect={props.onOpenAutomations}
+              />
+            ) : null}
+            {props.onOpenRoleplay ? (
+              <SidebarDestination
+                active={props.roleplayActive === true}
+                icon={Drama}
+                label="Characters"
+                onSelect={props.onOpenRoleplay}
               />
             ) : null}
             <SidebarDestination

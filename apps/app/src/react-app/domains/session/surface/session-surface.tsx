@@ -39,6 +39,8 @@ import type {
   CloudMcpSubmissionGateState,
   CloudMcpSubmissionResult,
 } from "@/react-app/domains/connections/cloud-mcp-submit-readiness";
+import { compileDraftText } from "@/app/roleplay/blocks";
+import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import { ReactSessionComposer } from "./composer/composer";
 import { useSessionModelSelection } from "./session-model-store";
 import type { ProviderCatalog } from "./use-model-behavior";
@@ -298,6 +300,8 @@ export type SessionSurfaceProps = {
   workspaceId: string;
   workspaceRoot: string;
   sessionId: string;
+  /** Non-null only for sessions bound to a character; gates the composer's block triggers. */
+  roleplay?: RoleplaySurfaceState | null;
   isControlTarget: boolean;
   opencodeBaseUrl: string;
   openworkToken: string;
@@ -922,10 +926,26 @@ export function SessionSurface(props: SessionSurfaceProps) {
     [snapshot, transcriptState],
   );
   const renderedMessages = useMemo(() => {
-    if (evalMarkdownMessages.length === 0) return baseRenderedMessages;
+    const base = evalMarkdownMessages.length === 0
+      ? baseRenderedMessages
+      : [...baseRenderedMessages, ...evalMarkdownMessages];
 
-    return [...baseRenderedMessages, ...evalMarkdownMessages];
-  }, [baseRenderedMessages, evalMarkdownMessages]);
+    // The card spec has the character speak first, but the engine exposes no way
+    // to write an assistant message, so the greeting is rendered rather than
+    // stored. `buildRoleplayTurn` puts the same text in the compiled prompt so
+    // the model knows what it opened with.
+    const greeting = props.roleplay?.greeting.trim();
+    if (!greeting) return base;
+    return [
+      {
+        id: `${props.sessionId}:roleplay-greeting`,
+        role: "assistant",
+        parts: [{ type: "text", text: greeting }],
+        metadata: { opencode: { created: 0 } },
+      } satisfies UIMessage,
+      ...base,
+    ];
+  }, [baseRenderedMessages, evalMarkdownMessages, props.roleplay?.greeting, props.sessionId]);
   const seedMarkdownPrimitiveControlAction = useMemo<OpenworkControlAction | null>(() => {
     if (!import.meta.env.DEV) return null;
 
@@ -1096,7 +1116,12 @@ export function SessionSurface(props: SessionSurfaceProps) {
   });
 
   const buildDraft = useCallback((text: string, nextAttachments: ComposerAttachment[]): ComposerDraft => {
-    const parts: ComposerPart[] = text.split(/(\[attachment [^\]]+\]|\[pasted text [^\]]+\]|\[connect-skill [^\]]+\]|\[skill [^\]]+\]|@[^\s@]+)/).flatMap((segment) => {
+    // Roleplay turns compile here, before parts exist. Director lines are removed
+    // from the message text at this point, so there is no later stage at which
+    // steering could leak into `parts` by omission.
+    const compiled = props.roleplay ? compileDraftText(text) : null;
+    const messageText = compiled ? compiled.messageText : text;
+    const parts: ComposerPart[] = messageText.split(/(\[attachment [^\]]+\]|\[pasted text [^\]]+\]|\[connect-skill [^\]]+\]|\[skill [^\]]+\]|@[^\s@]+)/).flatMap((segment) => {
       if (!segment) return [] as ComposerDraft["parts"];
       const attachmentMatch = segment.match(/^\[attachment (.+)\]$/);
       if (attachmentMatch) {
@@ -1129,7 +1154,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     });
     // Expand paste placeholders in resolvedText so the model receives
     // the actual pasted content instead of "[pasted text <label>]".
-    let resolved = resolvePastedTextPlaceholders(text, pasteParts);
+    let resolved = resolvePastedTextPlaceholders(messageText, pasteParts);
     resolved = resolved.replace(/\[attachment [^\]]+\]/g, "");
     resolved = resolved.replace(/\[connect-skill [^\]]+\]/g, (match) => {
       const token = parseConnectSkillToken(match);
@@ -1144,12 +1169,13 @@ export function SessionSurface(props: SessionSurfaceProps) {
       mode: "prompt",
       parts,
       attachments: nextAttachments,
-      text,
+      text: messageText,
       resolvedText: resolved,
+      ...(compiled ? { directorText: compiled.directorText, blocks: compiled.blocks } : {}),
       command: slashCommand ?? undefined,
       revertMessageId: getComposerRevertMessageId(useComposerStateStore.getState(), props.sessionId) ?? undefined,
     };
-  }, [mentions, pasteParts, props.sessionId]);
+  }, [mentions, pasteParts, props.roleplay, props.sessionId]);
 
   const handleComposerDraftChange = useCallback((value: string) => {
     setComposerDraft(props.sessionId, value);
@@ -2128,6 +2154,8 @@ export function SessionSurface(props: SessionSurfaceProps) {
         submissionPreparing={preparingCloudTools}
         queuedCount={queuedDrafts.length}
         disabled={model.transitionState !== "idle" || Boolean(props.modelUnavailable)}
+        roleplayBlocks={Boolean(props.roleplay)}
+        roleplayCharacterName={props.roleplay?.characterName || undefined}
         modelUnavailable={Boolean(props.modelUnavailable)}
         modelUnavailableMessage={props.modelUnavailableMessage}
         organizationModelsEmpty={props.organizationModelsEmpty}

@@ -1,0 +1,60 @@
+import type { CharacterCardV2, RoleplayPersona } from "@openwork/types/roleplay";
+
+import { compilePrompt } from "./compile-prompt.js";
+import { composeSystem, type ComposedSystem } from "./compose-system.js";
+import { substituteMacros } from "./macros.js";
+import { roleplayPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
+
+export type RoleplayTurnInput = {
+  card: CharacterCardV2;
+  persona: RoleplayPersona;
+  /** V3 nickname, when the card carried one. */
+  charName?: string;
+  /** The greeting the client rendered as the transcript's first entry. */
+  greeting?: string;
+  /** This turn's out-of-character steering, already split out of the message. */
+  directorText?: string;
+  envContext: string | null | undefined;
+};
+
+export type RoleplayTurn = {
+  prompt: RoleplayPromptOptions;
+  composed: ComposedSystem;
+};
+
+/**
+ * The greeting is rendered by the client, not stored by the engine, so the model
+ * has no record of having said it. Without this the character's own opening line
+ * is invisible to it and the first reply reads as if the scene had not started.
+ */
+function openingLine(greeting: string, char: string, user: string): string {
+  const expanded = substituteMacros(greeting, { char, user }).trim();
+  return expanded ? `# Opening Line\n\nYou opened the scene with:\n\n${expanded}` : "";
+}
+
+/**
+ * Build everything a roleplay send puts on the wire.
+ *
+ * One function so there is exactly one place that decides these travel together:
+ * the pinned agent, the deny-all tool map, and a `system` that composes onto the
+ * environment context instead of replacing it. A caller that assembles two of the
+ * three by hand is the failure this exists to prevent.
+ */
+export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
+  const char = (input.charName ?? input.card.data.name).trim() || "Character";
+  const user = input.persona.name.trim() || "User";
+  const characterPrompt = [
+    compilePrompt(input.card, input.persona, input.charName ? { charName: input.charName } : {}),
+    input.greeting ? openingLine(input.greeting, char, user) : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const composed = composeSystem({
+    envContext: input.envContext,
+    characterPrompt,
+    directorText: input.directorText,
+  });
+
+  return { prompt: roleplayPromptOptions(composed.system), composed };
+}
