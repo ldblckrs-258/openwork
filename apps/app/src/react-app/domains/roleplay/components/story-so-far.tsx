@@ -11,11 +11,22 @@ type StorySoFarProps = {
   /** Set once the conversation has been compacted, so the notice explains why this matters now. */
   compacted: boolean;
   memoryBusy: boolean;
+  revisionBusy: boolean;
   onSave: (value: string) => void;
   onExtractMemories: () => void;
+  onProposeRevision: () => void;
 };
 
-export function StorySoFar({ value, saving, compacted, memoryBusy, onSave, onExtractMemories }: StorySoFarProps) {
+export function StorySoFar({
+  value,
+  saving,
+  compacted,
+  memoryBusy,
+  revisionBusy,
+  onSave,
+  onExtractMemories,
+  onProposeRevision,
+}: StorySoFarProps) {
   const [draft, setDraft] = React.useState(value);
   const [open, setOpen] = React.useState(false);
 
@@ -38,6 +49,9 @@ export function StorySoFar({ value, saving, compacted, memoryBusy, onSave, onExt
               extraction is an extra completion over the whole transcript. */}
           <Button type="button" variant="ghost" size="sm" disabled={memoryBusy} onClick={onExtractMemories}>
             {memoryBusy ? "Thinking…" : "Remember this"}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" disabled={revisionBusy} onClick={onProposeRevision}>
+            {revisionBusy ? "Reading back…" : "Suggest card edits"}
           </Button>
           <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
             Story so far

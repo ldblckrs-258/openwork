@@ -15,11 +15,14 @@ import {
   deleteMemory,
   deletePersona,
   listCharacterMemories,
+  listCharacterRevisions,
   listCharacters,
   listPersonas,
   MAX_MEMORIES_PER_CHARACTER,
   MAX_RETAINED_TURNS_PER_SESSION,
+  MAX_REVISIONS_PER_CHARACTER,
   writeMemory,
+  writeRevision,
   readCharacter,
   listSessionTurns,
   readTurn,
@@ -359,12 +362,89 @@ describe("schema version", () => {
       createdAt: 1,
       updatedAt: 1,
     });
+    await writeRevision(config, WORKSPACE_A, {
+      id: "rev_versioned",
+      characterId: "char_versioned",
+      card: characterRecord("char_versioned").card,
+      changedFields: [],
+      createdAt: 1,
+    });
 
     expect(await schemaVersionOf("roleplay_characters", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_personas", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_sessions", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_turns", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_memories", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+    expect(await schemaVersionOf("roleplay_revisions", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+  });
+});
+
+describe("revisions", () => {
+  function revisionRecord(id: string, characterId: string, createdAt: number, personality: string) {
+    return {
+      id,
+      characterId,
+      card: {
+        spec: "chara_card_v2" as const,
+        spec_version: "2.0" as const,
+        data: {
+          name: "Aria",
+          description: "The archivist.",
+          personality,
+          scenario: "",
+          first_mes: "You're late.",
+          mes_example: "",
+          creator_notes: "",
+          system_prompt: "",
+          post_history_instructions: "",
+          alternate_greetings: [],
+          tags: [],
+          creator: "",
+          character_version: "",
+          extensions: {},
+        },
+      },
+      changedFields: ["personality"],
+      createdAt,
+    };
+  }
+
+  test("a revision keeps the whole prior card, so rollback is a copy", async () => {
+    await writeRevision(config, WORKSPACE_A, revisionRecord("rev_1", "char_rev", 10, "warm"));
+
+    const stored = await listCharacterRevisions(config, WORKSPACE_A, "char_rev");
+    expect(stored[0]?.card.data.personality).toBe("warm");
+    expect(stored[0]?.changedFields).toEqual(["personality"]);
+  });
+
+  test("revisions come back oldest first, so the first entry is the original", async () => {
+    await writeRevision(config, WORKSPACE_A, revisionRecord("rev_late", "char_order_rev", 30, "late"));
+    await writeRevision(config, WORKSPACE_A, revisionRecord("rev_early", "char_order_rev", 10, "early"));
+
+    expect((await listCharacterRevisions(config, WORKSPACE_A, "char_order_rev")).map((entry) => entry.id)).toEqual([
+      "rev_early",
+      "rev_late",
+    ]);
+  });
+
+  test("pruning drops from the middle and never the original", async () => {
+    // The oldest entry is the card before anything was applied. It is what a
+    // drift comparison and a full rollback are made against, so a plain
+    // "keep the last N" would discard the one entry the feature exists for.
+    for (let index = 0; index < MAX_REVISIONS_PER_CHARACTER + 5; index += 1) {
+      await writeRevision(config, WORKSPACE_A, revisionRecord(`rev_cap_${index}`, "char_cap_rev", index, `v${index}`));
+    }
+
+    const stored = await listCharacterRevisions(config, WORKSPACE_A, "char_cap_rev");
+    expect(stored).toHaveLength(MAX_REVISIONS_PER_CHARACTER);
+    expect(stored[0]?.id).toBe("rev_cap_0");
+    expect(stored.at(-1)?.id).toBe(`rev_cap_${MAX_REVISIONS_PER_CHARACTER + 4}`);
+  });
+
+  test("revisions belong to one character", async () => {
+    await writeRevision(config, WORKSPACE_A, revisionRecord("rev_mine", "char_a_rev", 1, "mine"));
+
+    expect(await listCharacterRevisions(config, WORKSPACE_A, "char_b_rev")).toEqual([]);
   });
 });
 

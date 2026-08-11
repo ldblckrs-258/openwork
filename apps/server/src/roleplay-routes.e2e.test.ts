@@ -375,6 +375,32 @@ describe("roleplay routes", () => {
     expect(response.status).toBe(400);
   });
 
+  test("a revision round-trips and is listed per character", async () => {
+    const { base, token } = await startOpenworkServer();
+    const created = await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify(characterBody("char_1")),
+    });
+    const card = (await created.json()).character.card;
+
+    const written = await fetch(`${base}/workspace/ws_1/roleplay/revisions/rev_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({
+        revision: { id: "rev_1", characterId: "char_1", card, changedFields: ["personality"], createdAt: 5 },
+      }),
+    });
+    expect(written.status).toBe(200);
+
+    const listed = await (await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1/revisions`, { headers: auth(token) })).json();
+    expect(listed.revisions).toHaveLength(1);
+    expect(listed.revisions[0].changedFields).toEqual(["personality"]);
+
+    const other = await (await fetch(`${base}/workspace/ws_1/roleplay/characters/char_2/revisions`, { headers: auth(token) })).json();
+    expect(other.revisions).toEqual([]);
+  });
+
   test("characters are isolated per workspace", async () => {
     const { base, token } = await startOpenworkServer();
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_a`, {

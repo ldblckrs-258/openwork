@@ -7,6 +7,7 @@ import {
 } from "@openwork/types/agent-context-diagnostics";
 import { normalizeBaseUrl } from "@openwork/types/url";
 import type {
+  RoleplayCardRevision,
   RoleplayCharacterRecord,
   RoleplayMemoryRecord,
   RoleplayPersonaRecord,
@@ -1609,6 +1610,18 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         baseUrl,
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/memories/${encodeURIComponent(memoryId)}`,
         { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
+      ),
+    listRoleplayRevisions: (workspaceId: string, characterId: string) =>
+      requestJson<{ revisions: RoleplayCardRevision[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/characters/${encodeURIComponent(characterId)}/revisions`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplayRevision: (workspaceId: string, revision: RoleplayCardRevision) =>
+      requestJson<{ revision: RoleplayCardRevision }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/revisions/${encodeURIComponent(revision.id)}`,
+        { token, hostToken, method: "PUT", body: { revision }, timeoutMs: timeouts.config },
       ),
     getSessionGroups: (workspaceId: string) =>
       requestJson<{ state: OpenworkSessionGroupState; updatedAt: number | null }>(

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type {
+  RoleplayCardRevision,
   RoleplayCharacterRecord,
   RoleplayMemoryRecord,
   RoleplayPersonaRecord,
@@ -213,6 +214,47 @@ export function useDeleteRoleplayMemory(endpoint: ResolvedWorkspaceEndpoint | nu
           queryKey: roleplayMemoriesQueryKey(endpoint.workspaceId, input.characterId),
         });
       }
+    },
+  });
+}
+
+export function roleplayRevisionsQueryKey(workspaceId: string, characterId: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "revisions", workspaceId, characterId] as const;
+}
+
+export function useRoleplayRevisions(endpoint: ResolvedWorkspaceEndpoint | null, characterId: string | null) {
+  return useQuery({
+    queryKey: roleplayRevisionsQueryKey(endpoint?.workspaceId ?? "", characterId ?? ""),
+    enabled: Boolean(endpoint) && Boolean(characterId),
+    queryFn: async () => {
+      if (!endpoint || !characterId) return [];
+      return (await endpoint.client.listRoleplayRevisions(endpoint.workspaceId, characterId)).revisions;
+    },
+  });
+}
+
+/**
+ * Write the revision and the revised character together.
+ *
+ * They are two documents with no transaction between them, so the order matters:
+ * the revision — the copy of the card as it was — is written first. A crash
+ * between the two then leaves a harmless extra history entry rather than a
+ * changed card with no way back.
+ */
+export function useApplyRoleplayRevision(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { revision: RoleplayCardRevision; character: RoleplayCharacterRecord }) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      await endpoint.client.putRoleplayRevision(endpoint.workspaceId, input.revision);
+      return (await endpoint.client.putRoleplayCharacter(endpoint.workspaceId, input.character)).character;
+    },
+    onSuccess: async (character) => {
+      if (!endpoint) return;
+      await invalidateCharacters(queryClient, endpoint.workspaceId);
+      await queryClient.invalidateQueries({
+        queryKey: roleplayRevisionsQueryKey(endpoint.workspaceId, character.id),
+      });
     },
   });
 }

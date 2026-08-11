@@ -30,6 +30,7 @@ import { CharacterGenerate } from "./character-generate";
 import { CharacterImport } from "./character-import";
 import { CharacterList } from "./character-list";
 import { CharacterMemories } from "./character-memories";
+import { CharacterRevisions } from "./character-revisions";
 import { PersonaEditor } from "./persona-editor";
 
 type RoleplayPageProps = {
@@ -58,6 +59,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
   const [generating, setGenerating] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
   const [remembering, setRemembering] = React.useState<RoleplayCharacterRecord | null>(null);
+  const [reviewingRevisions, setReviewingRevisions] = React.useState<RoleplayCharacterRecord | null>(null);
 
   const personaRecord: RoleplayPersonaRecord = React.useMemo(
     () =>
@@ -100,6 +102,18 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         saving={saveCharacter.isPending}
         onCancel={() => setEditing(null)}
         onSave={(character) => persist(character, "Character saved")}
+      />
+    );
+  }
+
+  if (reviewingRevisions) {
+    return (
+      <CharacterRevisions
+        endpoint={endpoint}
+        character={
+          characters.data?.find((entry) => entry.id === reviewingRevisions.id) ?? reviewingRevisions
+        }
+        onBack={() => setReviewingRevisions(null)}
       />
     );
   }
@@ -169,6 +183,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         onGenerate={onRunGeneration ? () => setGenerating(true) : undefined}
         onImport={() => setImporting(true)}
         onOpenMemories={(character) => setRemembering(character)}
+        onOpenRevisions={(character) => setReviewingRevisions(character)}
         onStartChat={
           onStartChat
             ? (character) => {

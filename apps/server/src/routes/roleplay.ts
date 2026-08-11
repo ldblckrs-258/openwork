@@ -1,10 +1,12 @@
 import { ApiError } from "../errors.js";
 import {
+  roleplayCardRevisionSchema,
   roleplayCharacterRecordSchema,
   roleplayMemoryRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
+  type RoleplayCardRevision,
   type RoleplayCharacterRecord,
   type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
@@ -18,6 +20,7 @@ import {
   deleteMemory,
   deletePersona,
   listCharacterMemories,
+  listCharacterRevisions,
   listCharacters,
   listPersonas,
   readCharacter,
@@ -26,6 +29,7 @@ import {
   writeCharacter,
   writeMemory,
   writePersona,
+  writeRevision,
   writeTurn,
 } from "../roleplay-store.js";
 import type { ServerConfig, TokenScope, WorkspaceInfo } from "../types.js";
@@ -88,6 +92,14 @@ function parseMemory(body: Record<string, unknown>): RoleplayMemoryRecord {
   const parsed = roleplayMemoryRecordSchema.safeParse(body.memory);
   if (!parsed.success) {
     throw new ApiError(400, "invalid_memory", `Invalid memory: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+  }
+  return parsed.data;
+}
+
+function parseRevision(body: Record<string, unknown>): RoleplayCardRevision {
+  const parsed = roleplayCardRevisionSchema.safeParse(body.revision);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_revision", `Invalid revision: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
   }
   return parsed.data;
 }
@@ -224,5 +236,25 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     requireClientScope(ctx, "collaborator");
     const workspace = await resolveWorkspace(config, ctx.params.id);
     return jsonResponse({ deleted: await deleteMemory(config, workspace.id, ctx.params.memoryId) });
+  });
+
+  // Revisions are append-only. Undoing one writes the restored card through the
+  // ordinary character route and records another revision, so the history stays
+  // a record of what happened rather than of what is currently believed.
+  addRoute(routes, "GET", "/workspace/:id/roleplay/characters/:characterId/revisions", "client", async (ctx) => {
+    const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
+    return jsonResponse({ revisions: await listCharacterRevisions(config, workspace.id, ctx.params.characterId) });
+  });
+
+  addRoute(routes, "PUT", "/workspace/:id/roleplay/revisions/:revisionId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const revision = parseRevision(body);
+    if (revision.id !== ctx.params.revisionId) {
+      throw new ApiError(400, "revision_id_mismatch", "Revision id in the body does not match the path");
+    }
+    return jsonResponse({ revision: await writeRevision(config, workspace.id, revision) });
   });
 }

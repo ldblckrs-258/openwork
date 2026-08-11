@@ -148,6 +148,14 @@ export const roleplayCharacterRecordSchema = z.object({
   charSubstitutionName: looseString,
   avatarPath: looseOptionalString,
   source: roleplayCharacterSourceSchema.catch("authored"),
+  /**
+   * Set when a revision has been applied.
+   *
+   * Matters most for imported cards: once one has been revised it no longer
+   * represents its original author's work, and anything that presents it — the
+   * library, an export — should not imply otherwise.
+   */
+  revisedAt: z.number().int().nonnegative().optional().catch(undefined),
   createdAt: timestamp,
   updatedAt: timestamp,
   /**
@@ -251,3 +259,25 @@ export const roleplayMemoryRecordSchema = z.object({
   updatedAt: timestamp,
 })
 export type RoleplayMemoryRecord = z.infer<typeof roleplayMemoryRecordSchema>
+
+/**
+ * A card as it stood before a revision was applied.
+ *
+ * Kept so an approved change can be undone. Cards are small, so storing the whole
+ * card rather than a patch costs little and makes rollback a copy rather than an
+ * inverse-diff — which is the operation most likely to be subtly wrong when it is
+ * needed most.
+ *
+ * The oldest revision for a character is its state before any revision, so it
+ * doubles as the baseline a drift comparison is made against.
+ */
+export const roleplayCardRevisionSchema = z.object({
+  id: idString,
+  characterId: idString,
+  /** The card *before* this revision replaced it. */
+  card: characterCardV2Schema,
+  /** Field names this revision changed, for rendering the history without diffing. */
+  changedFields: looseStringArray,
+  createdAt: timestamp,
+})
+export type RoleplayCardRevision = z.infer<typeof roleplayCardRevisionSchema>

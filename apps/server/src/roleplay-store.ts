@@ -16,11 +16,13 @@
 import type { ZodType } from "zod";
 import {
   ROLEPLAY_STORE_SCHEMA_VERSION,
+  roleplayCardRevisionSchema,
   roleplayCharacterRecordSchema,
   roleplayMemoryRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
+  type RoleplayCardRevision,
   type RoleplayCharacterRecord,
   type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
@@ -42,6 +44,15 @@ export const MAX_RETAINED_TURNS_PER_SESSION = 200;
  * leaving the prompt-side selection entirely to `memory.ts`.
  */
 export const MAX_MEMORIES_PER_CHARACTER = 500;
+
+/**
+ * Retained card revisions per character.
+ *
+ * The oldest is never dropped: it is the card as it stood before any revision,
+ * and it is what a drift comparison and a full rollback are made against. Losing
+ * it would make the intermediate history meaningless.
+ */
+export const MAX_REVISIONS_PER_CHARACTER = 50;
 
 type Document<T> = Record<string, T>;
 
@@ -168,6 +179,7 @@ const personaStore = createDocumentStore("roleplay_personas", "personas_json", r
 const sessionStore = createDocumentStore("roleplay_sessions", "sessions_json", roleplaySessionBindingSchema);
 const turnStore = createDocumentStore("roleplay_turns", "turns_json", roleplayTurnRecordSchema);
 const memoryStore = createDocumentStore("roleplay_memories", "memories_json", roleplayMemoryRecordSchema);
+const revisionStore = createDocumentStore("roleplay_revisions", "revisions_json", roleplayCardRevisionSchema);
 
 export async function listCharacters(config: ServerConfig, workspaceId: string): Promise<RoleplayCharacterRecord[]> {
   const document = await characterStore.read(config, workspaceId);
@@ -373,6 +385,43 @@ export async function deleteMemory(config: ServerConfig, workspaceId: string, me
     const next = { ...current };
     delete next[memoryId];
     return { next, result: true };
+  });
+}
+
+/** Oldest first: the first entry is the card before any revision. */
+export async function listCharacterRevisions(
+  config: ServerConfig,
+  workspaceId: string,
+  characterId: string,
+): Promise<RoleplayCardRevision[]> {
+  return Object.values(await revisionStore.read(config, workspaceId))
+    .filter((entry) => entry.characterId === characterId)
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+/**
+ * Record the card as it stood before a revision.
+ *
+ * Pruning drops from the middle, never the ends: the oldest is the original and
+ * the newest is the most likely undo target, so a plain "keep the last N" would
+ * discard the one entry the feature exists to preserve.
+ */
+export async function writeRevision(
+  config: ServerConfig,
+  workspaceId: string,
+  record: RoleplayCardRevision,
+): Promise<RoleplayCardRevision> {
+  return revisionStore.updateDocument(config, workspaceId, (current) => {
+    const next = { ...current, [record.id]: record };
+    const mine = Object.values(next)
+      .filter((entry) => entry.characterId === record.characterId)
+      .sort((left, right) => left.createdAt - right.createdAt);
+    const excess = mine.length - MAX_REVISIONS_PER_CHARACTER;
+    for (let index = 0; index < excess; index += 1) {
+      const victim = mine[index + 1];
+      if (victim) delete next[victim.id];
+    }
+    return { next, result: record };
   });
 }
 

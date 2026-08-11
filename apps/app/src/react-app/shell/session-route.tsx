@@ -51,8 +51,17 @@ import {
   parseMemoryProposals,
   type MemoryProposal,
 } from "@/app/roleplay/memory-extract";
+import {
+  applyRevision,
+  buildRevisionRequest,
+  createRevisionId,
+  parseRevisionProposals,
+  type FieldProposal,
+  type RevisableField,
+} from "@/app/roleplay/revise";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
+  useApplyRoleplayRevision,
   useBindRoleplaySession,
   useRoleplayMemories,
   useRoleplayPersonas,
@@ -61,6 +70,7 @@ import {
   useSaveRoleplayMemory,
   useSaveRoleplayTurn,
 } from "@/react-app/domains/roleplay/state/roleplay-queries";
+import { CardDiff } from "@/react-app/domains/roleplay/components/card-diff";
 import { MemoryReview } from "@/react-app/domains/roleplay/components/memory-review";
 import { RoleplayPage } from "@/react-app/domains/roleplay/pages/roleplay-page";
 import {
@@ -729,6 +739,10 @@ export function SessionRoute() {
   const [memoryProposals, setMemoryProposals] = useState<MemoryProposal[]>([]);
   const [memoryReviewOpen, setMemoryReviewOpen] = useState(false);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const applyRoleplayRevision = useApplyRoleplayRevision(selectedWorkspaceEndpoint);
+  const [revisionProposals, setRevisionProposals] = useState<FieldProposal[]>([]);
+  const [revisionReviewOpen, setRevisionReviewOpen] = useState(false);
+  const [revisionBusy, setRevisionBusy] = useState(false);
   const [roleplayBusy, setRoleplayBusy] = useState(false);
   const [roleplayCompacted, setRoleplayCompacted] = useState(false);
   // Compaction and the abort/revert/prompt chain are independent calls against
@@ -1340,9 +1354,11 @@ export function SessionRoute() {
             storySaving: bindRoleplaySession.isPending,
             compacted: roleplayCompacted,
             memoryBusy,
+            revisionBusy,
             onExtractMemories: () => void handleExtractMemories(),
+            onProposeRevision: () => void handleProposeRevision(),
             onSwipe: () => void handleRoleplaySwipe(),
-            onSelectAlternative: handleRoleplaySelectAlternative,
+            onSelectAlternative: (offset: number) => handleRoleplaySelectAlternative(offset),
             onBranch: () => void handleRoleplayBranch(),
             onSaveStorySoFar: (value: string) => void handleSaveStorySoFar(value),
           }
@@ -2295,6 +2311,103 @@ export function SessionRoute() {
       setMemoryBusy(false);
     }
   }, [roleplaySurface, saveRoleplayMemory, selectedSessionId]);
+
+  /**
+   * Ask the character what its own card gets wrong.
+   *
+   * Director notes are pulled from the stored turns rather than from the
+   * transcript, because they never went into message history — they were split
+   * out into `system` at send time. They are the strongest evidence available:
+   * every other signal is inference, while a director note is the user stating
+   * in plain words what was wrong.
+   *
+   * Nothing is applied here. The proposals go to a per-field review.
+   */
+  const handleProposeRevision = useCallback(async () => {
+    if (!opencodeClient || !selectedSessionId || !roleplaySurface) return;
+    setRevisionBusy(true);
+    try {
+      const directorNotes = (roleplayTurnsQuery.data ?? [])
+        .flatMap((turn) => turn.blocks)
+        .filter((block) => block.type === "director")
+        .map((block) => block.text.trim())
+        .filter(Boolean);
+
+      const history = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId })) ?? [];
+      const transcript = buildTranscriptText(
+        history
+          .filter((entry) => entry.info.role === "user" || entry.info.role === "assistant")
+          .map((entry) => ({
+            role: entry.info.role === "user" ? "user" as const : "assistant" as const,
+            text: (entry.parts ?? [])
+              .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+              .map((part) => part.text)
+              .join(""),
+          })),
+        roleplaySurface.characterName || "The character",
+        roleplaySurface.persona.name || "User",
+      );
+      if (!transcript.trim() && directorNotes.length === 0) {
+        toast.info("Nothing to go on yet", { description: "This conversation has no exchanges." });
+        return;
+      }
+
+      const raw = await handleRunGeneration(
+        buildRevisionRequest({ card: roleplaySurface.card, directorNotes, transcript }),
+      );
+      const parsed = parseRevisionProposals(raw, roleplaySurface.card);
+      if (!parsed.ok) {
+        toast.error("Could not read what the model proposed", { description: parsed.error });
+        return;
+      }
+      setRevisionProposals(parsed.proposals);
+      setRevisionReviewOpen(true);
+    } catch (error) {
+      toast.error("Could not work out what to change", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setRevisionBusy(false);
+    }
+  }, [handleRunGeneration, opencodeClient, roleplaySurface, roleplayTurnsQuery.data, selectedSessionId]);
+
+  const handleApplyRevision = useCallback(async (approved: RevisableField[]) => {
+    const character = roleplayBindingQuery.data?.character;
+    if (!character) return;
+    setRevisionBusy(true);
+    try {
+      const applied = applyRevision({
+        character,
+        proposals: revisionProposals,
+        approved,
+        revisionId: createRevisionId(Date.now(), Math.random().toString(36).slice(2, 8)),
+        now: Date.now(),
+      });
+      if (!applied.ok) {
+        toast.error("Could not apply the changes", { description: applied.message });
+        return;
+      }
+      // Approving nothing leaves the card byte-identical and writes no history.
+      if (applied.unchanged) {
+        setRevisionReviewOpen(false);
+        setRevisionProposals([]);
+        return;
+      }
+      await applyRoleplayRevision.mutateAsync({ revision: applied.revision, character: applied.character });
+      await roleplayBindingQuery.refetch();
+      toast.success(`Updated ${applied.changedFields.join(", ")}`, {
+        description: "The previous card is kept, so this can be undone.",
+      });
+      setRevisionReviewOpen(false);
+      setRevisionProposals([]);
+    } catch (error) {
+      toast.error("Could not apply the changes", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setRevisionBusy(false);
+    }
+  }, [applyRoleplayRevision, revisionProposals, roleplayBindingQuery]);
 
   const handleSaveStorySoFar = useCallback(async (value: string) => {
     const binding = roleplayBindingQuery.data?.binding;
@@ -3491,6 +3604,16 @@ export function SessionRoute() {
       onRefreshOpenWorkModels={refreshOpenWorkModels}
       onRefreshOrganizationModels={refreshOrganizationModelAccess}
       restrictToCloud={restrictToCloudProviders}
+    />
+    <CardDiff
+      open={revisionReviewOpen}
+      proposals={revisionProposals}
+      saving={revisionBusy}
+      onApply={(fields) => void handleApplyRevision(fields)}
+      onClose={() => {
+        setRevisionReviewOpen(false);
+        setRevisionProposals([]);
+      }}
     />
     <MemoryReview
       open={memoryReviewOpen}

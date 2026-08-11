@@ -305,12 +305,15 @@ export type RoleplayControls = {
   storySaving: boolean;
   compacted: boolean;
   memoryBusy: boolean;
+  revisionBusy: boolean;
   onSwipe: () => void;
   onSelectAlternative: (offset: number) => void;
   onBranch: () => void;
   onSaveStorySoFar: (value: string) => void;
   /** Proposes memories from this conversation. User-triggered: it costs a completion. */
   onExtractMemories: () => void;
+  /** Proposes edits to the character's own card. User-triggered for the same reason. */
+  onProposeRevision: () => void;
 };
 
 export type SessionSurfaceProps = {
@@ -2188,8 +2191,10 @@ export function SessionSurface(props: SessionSurfaceProps) {
               saving={props.roleplayControls.storySaving}
               compacted={props.roleplayControls.compacted}
               memoryBusy={props.roleplayControls.memoryBusy}
+              revisionBusy={props.roleplayControls.revisionBusy}
               onSave={props.roleplayControls.onSaveStorySoFar}
               onExtractMemories={props.roleplayControls.onExtractMemories}
+              onProposeRevision={props.roleplayControls.onProposeRevision}
             />
           </>
         ) : null}
