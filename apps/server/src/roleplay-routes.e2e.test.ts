@@ -186,6 +186,102 @@ describe("roleplay routes", () => {
     expect(deleted.deleted).toBe(true);
   });
 
+  test("a session binding round-trips and carries its character with it", async () => {
+    // The binding is what makes a session a roleplay session, and the send path
+    // needs the character in the same response — a second round trip would let
+    // a turn be composed against a character the client had not loaded yet.
+    const { base, token } = await startOpenworkServer();
+    await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify(characterBody("char_1")),
+    });
+
+    const unbound = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, { headers: auth(token) })).json();
+    expect(unbound.binding).toBeNull();
+
+    const bound = await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", boundAt: 5 } }),
+    });
+    expect(bound.status).toBe(200);
+
+    const read = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, { headers: auth(token) })).json();
+    expect(read.binding.characterId).toBe("char_1");
+    expect(read.character.card.data.name).toBe("Aria");
+    expect(read.characterDeleted).toBe(false);
+  });
+
+  test("deleting the bound character leaves the session readable and says so", async () => {
+    const { base, token } = await startOpenworkServer();
+    await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify(characterBody("char_1")),
+    });
+    await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", boundAt: 5 } }),
+    });
+    await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, { method: "DELETE", headers: auth(token) });
+
+    const read = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, { headers: auth(token) })).json();
+    expect(read.binding.characterId).toBe("char_1");
+    expect(read.characterDeleted).toBe(true);
+  });
+
+  test("a turn's blocks are stored against its message so a regenerate can recompose it", async () => {
+    // Director text lives in `system`, not in message history. Without this the
+    // steering silently disappears on the first swipe and the character appears
+    // to ignore an instruction the user just gave.
+    const { base, token } = await startOpenworkServer();
+    const record = {
+      record: {
+        messageId: "msg_1",
+        sessionId: "ses_1",
+        blocks: [
+          { type: "action", text: "straightens papers" },
+          { type: "director", text: "keep her evasive" },
+        ],
+        createdAt: 7,
+      },
+    };
+
+    expect((await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify(record),
+    })).status).toBe(200);
+
+    const read = await (await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, { headers: auth(token) })).json();
+    expect(read.blocks).toEqual(record.record.blocks);
+  });
+
+  test("clearing a binding also drops the turns stored for that session", async () => {
+    const { base, token } = await startOpenworkServer();
+    await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", boundAt: 5 } }),
+    });
+    await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ record: { messageId: "msg_1", sessionId: "ses_1", blocks: [{ type: "plain", text: "hi" }], createdAt: 7 } }),
+    });
+
+    const cleared = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "DELETE",
+      headers: auth(token),
+    })).json();
+    expect(cleared.cleared).toBe(true);
+
+    const orphaned = await (await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, { headers: auth(token) })).json();
+    expect(orphaned.blocks).toBeNull();
+  });
+
   test("characters are isolated per workspace", async () => {
     const { base, token } = await startOpenworkServer();
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_a`, {

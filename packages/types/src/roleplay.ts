@@ -123,7 +123,13 @@ export const ROLEPLAY_STORE_SCHEMA_VERSION = 1
 const idString = z.string().trim().min(1).max(256)
 const timestamp = z.number().int().nonnegative().catch(0)
 
-export const roleplayBlockTypeSchema = z.enum(["dialogue", "action", "director"])
+/**
+ * `plain` is not one of the composer's three authored block types. It is what
+ * untriggered text becomes: a roleplay turn is still free text, and a line the
+ * user typed without a trigger has to survive the round trip verbatim rather
+ * than being silently promoted to dialogue and wrapped in quotes it never had.
+ */
+export const roleplayBlockTypeSchema = z.enum(["dialogue", "action", "director", "plain"])
 export type RoleplayBlockType = z.infer<typeof roleplayBlockTypeSchema>
 
 export const roleplayBlockSchema = z.object({

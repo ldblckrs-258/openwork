@@ -1,17 +1,26 @@
 import { ApiError } from "../errors.js";
 import {
   roleplayCharacterRecordSchema,
+  roleplayMessageBlocksRecordSchema,
   roleplayPersonaRecordSchema,
+  roleplaySessionBindingSchema,
   type RoleplayCharacterRecord,
+  type RoleplayMessageBlocksRecord,
   type RoleplayPersonaRecord,
+  type RoleplaySessionBinding,
 } from "@openwork/types/roleplay";
 import {
+  bindSession,
+  clearSessionBinding,
   deleteCharacter,
   deletePersona,
   listCharacters,
   listPersonas,
   readCharacter,
+  readMessageBlocks,
+  readSessionBinding,
   writeCharacter,
+  writeMessageBlocks,
   writePersona,
 } from "../roleplay-store.js";
 import type { ServerConfig, TokenScope, WorkspaceInfo } from "../types.js";
@@ -50,6 +59,22 @@ function parsePersona(body: Record<string, unknown>): RoleplayPersonaRecord {
   const parsed = roleplayPersonaRecordSchema.safeParse(body.persona);
   if (!parsed.success) {
     throw new ApiError(400, "invalid_persona", `Invalid persona: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+  }
+  return parsed.data;
+}
+
+function parseBinding(body: Record<string, unknown>): RoleplaySessionBinding {
+  const parsed = roleplaySessionBindingSchema.safeParse(body.binding);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_binding", `Invalid session binding: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+  }
+  return parsed.data;
+}
+
+function parseMessageBlocks(body: Record<string, unknown>): RoleplayMessageBlocksRecord {
+  const parsed = roleplayMessageBlocksRecordSchema.safeParse(body.record);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_message_blocks", `Invalid message blocks: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
   }
   return parsed.data;
 }
@@ -112,5 +137,52 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     requireClientScope(ctx, "collaborator");
     const workspace = await resolveWorkspace(config, ctx.params.id);
     return jsonResponse({ deleted: await deletePersona(config, workspace.id, ctx.params.personaId) });
+  });
+
+  // A session's binding is what makes it a roleplay session: it is the only
+  // thing the send path and the composer gate read to decide that a turn is
+  // roleplay rather than ordinary chat.
+  addRoute(routes, "GET", "/workspace/:id/roleplay/sessions/:sessionId", "client", async (ctx) => {
+    const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
+    const state = await readSessionBinding(config, workspace.id, ctx.params.sessionId);
+    return jsonResponse({ binding: state?.binding ?? null, character: state?.character ?? null, characterDeleted: state?.characterDeleted ?? false });
+  });
+
+  addRoute(routes, "PUT", "/workspace/:id/roleplay/sessions/:sessionId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const binding = parseBinding(body);
+    if (binding.sessionId !== ctx.params.sessionId) {
+      throw new ApiError(400, "session_id_mismatch", "Session id in the body does not match the path");
+    }
+    return jsonResponse({ binding: await bindSession(config, workspace.id, binding) });
+  });
+
+  addRoute(routes, "DELETE", "/workspace/:id/roleplay/sessions/:sessionId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    return jsonResponse({ cleared: await clearSessionBinding(config, workspace.id, ctx.params.sessionId) });
+  });
+
+  // Director text lives in `system`, not in message history, so a regenerate
+  // would lose it unless the turn's blocks were stored alongside the message.
+  addRoute(routes, "GET", "/workspace/:id/roleplay/messages/:messageId/blocks", "client", async (ctx) => {
+    const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
+    return jsonResponse({ blocks: (await readMessageBlocks(config, workspace.id, ctx.params.messageId)) ?? null });
+  });
+
+  addRoute(routes, "PUT", "/workspace/:id/roleplay/messages/:messageId/blocks", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const record = parseMessageBlocks(body);
+    if (record.messageId !== ctx.params.messageId) {
+      throw new ApiError(400, "message_id_mismatch", "Message id in the body does not match the path");
+    }
+    return jsonResponse({ record: await writeMessageBlocks(config, workspace.id, record) });
   });
 }
