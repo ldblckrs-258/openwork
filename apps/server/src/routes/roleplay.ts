@@ -1,10 +1,12 @@
 import { ApiError } from "../errors.js";
 import {
   roleplayCharacterRecordSchema,
+  roleplayMemoryRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
   type RoleplayCharacterRecord,
+  type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
   type RoleplaySessionBinding,
   type RoleplayTurnRecord,
@@ -13,13 +15,16 @@ import {
   bindSession,
   clearSessionBinding,
   deleteCharacter,
+  deleteMemory,
   deletePersona,
+  listCharacterMemories,
   listCharacters,
   listPersonas,
   readCharacter,
   listSessionTurns,
   readSessionBinding,
   writeCharacter,
+  writeMemory,
   writePersona,
   writeTurn,
 } from "../roleplay-store.js";
@@ -75,6 +80,14 @@ function parseTurn(body: Record<string, unknown>): RoleplayTurnRecord {
   const parsed = roleplayTurnRecordSchema.safeParse(body.turn);
   if (!parsed.success) {
     throw new ApiError(400, "invalid_turn", `Invalid turn: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+  }
+  return parsed.data;
+}
+
+function parseMemory(body: Record<string, unknown>): RoleplayMemoryRecord {
+  const parsed = roleplayMemoryRecordSchema.safeParse(body.memory);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_memory", `Invalid memory: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
   }
   return parsed.data;
 }
@@ -185,5 +198,31 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
       throw new ApiError(400, "turn_id_mismatch", "Turn id in the body does not match the path");
     }
     return jsonResponse({ turn: await writeTurn(config, workspace.id, turn) });
+  });
+
+  // Memories are per character, not per session: outliving the conversation they
+  // were learned in is the whole feature.
+  addRoute(routes, "GET", "/workspace/:id/roleplay/characters/:characterId/memories", "client", async (ctx) => {
+    const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
+    return jsonResponse({ memories: await listCharacterMemories(config, workspace.id, ctx.params.characterId) });
+  });
+
+  addRoute(routes, "PUT", "/workspace/:id/roleplay/memories/:memoryId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const memory = parseMemory(body);
+    if (memory.id !== ctx.params.memoryId) {
+      throw new ApiError(400, "memory_id_mismatch", "Memory id in the body does not match the path");
+    }
+    return jsonResponse({ memory: await writeMemory(config, workspace.id, memory) });
+  });
+
+  addRoute(routes, "DELETE", "/workspace/:id/roleplay/memories/:memoryId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    return jsonResponse({ deleted: await deleteMemory(config, workspace.id, ctx.params.memoryId) });
   });
 }

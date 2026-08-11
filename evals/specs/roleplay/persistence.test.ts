@@ -12,10 +12,14 @@ import {
   bindSession,
   clearSessionBinding,
   deleteCharacter,
+  deleteMemory,
   deletePersona,
+  listCharacterMemories,
   listCharacters,
   listPersonas,
+  MAX_MEMORIES_PER_CHARACTER,
   MAX_RETAINED_TURNS_PER_SESSION,
+  writeMemory,
   readCharacter,
   listSessionTurns,
   readTurn,
@@ -345,11 +349,100 @@ describe("turns", () => {
 describe("schema version", () => {
   test("every store stamps the current schema version so a future bump can migrate", async () => {
     await writeCharacter(config, WORKSPACE_A, characterRecord("char_versioned"));
+    // Each table is created on its first write, so every store needs one before
+    // its version can be read back.
+    await writeMemory(config, WORKSPACE_A, {
+      id: "mem_versioned",
+      characterId: "char_versioned",
+      text: "Versioned.",
+      source: "user",
+      createdAt: 1,
+      updatedAt: 1,
+    });
 
     expect(await schemaVersionOf("roleplay_characters", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_personas", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_sessions", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_turns", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+    expect(await schemaVersionOf("roleplay_memories", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+  });
+});
+
+describe("memories", () => {
+  function memoryRecord(id: string, characterId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      characterId,
+      text: "Wren works nights at the harbour.",
+      source: "user" as const,
+      createdAt: 10,
+      updatedAt: 10,
+      ...overrides,
+    };
+  }
+
+  test("a memory survives the session it was learned in", async () => {
+    // The entire feature. Memories are keyed per character, so nothing about the
+    // conversation they came from can take them with it.
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_1", "char_mem", { sessionId: "ses_old" }));
+    await clearSessionBinding(config, WORKSPACE_A, "ses_old");
+
+    const stored = await listCharacterMemories(config, WORKSPACE_A, "char_mem");
+    expect(stored.map((entry) => entry.text)).toEqual(["Wren works nights at the harbour."]);
+  });
+
+  test("memories belong to one character, not to the workspace", async () => {
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_a", "char_one"));
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_b", "char_two", { text: "Different." }));
+
+    expect(await listCharacterMemories(config, WORKSPACE_A, "char_one")).toHaveLength(1);
+    expect((await listCharacterMemories(config, WORKSPACE_A, "char_two"))[0]?.text).toBe("Different.");
+  });
+
+  test("memories are listed oldest first", async () => {
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_late", "char_order", { createdAt: 30 }));
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_early", "char_order", { createdAt: 10 }));
+
+    expect((await listCharacterMemories(config, WORKSPACE_A, "char_order")).map((entry) => entry.id)).toEqual([
+      "mem_early",
+      "mem_late",
+    ]);
+  });
+
+  test("a rewrite replaces the entry rather than adding a second", async () => {
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_edit", "char_edit"));
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_edit", "char_edit", { text: "Rewritten.", updatedAt: 20 }));
+
+    const stored = await listCharacterMemories(config, WORKSPACE_A, "char_edit");
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.text).toBe("Rewritten.");
+  });
+
+  test("forgetting removes the entry outright", async () => {
+    // Unlike a character, a memory has nothing pointing at it, so there is no
+    // reason to tombstone one — and "forget" that leaves the fact on disk would
+    // be a lie about what the button did.
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_gone", "char_forget"));
+
+    expect(await deleteMemory(config, WORKSPACE_A, "mem_gone")).toBe(true);
+    expect(await listCharacterMemories(config, WORKSPACE_A, "char_forget")).toEqual([]);
+    expect(await deleteMemory(config, WORKSPACE_A, "mem_gone")).toBe(false);
+  });
+
+  test("a character's memories are capped, oldest dropped first", async () => {
+    for (let index = 0; index < MAX_MEMORIES_PER_CHARACTER + 5; index += 1) {
+      await writeMemory(config, WORKSPACE_A, memoryRecord(`mem_cap_${index}`, "char_cap", { createdAt: index }));
+    }
+
+    const stored = await listCharacterMemories(config, WORKSPACE_A, "char_cap");
+    expect(stored).toHaveLength(MAX_MEMORIES_PER_CHARACTER);
+    expect(stored[0]?.id).toBe("mem_cap_5");
+  });
+
+  test("memories do not cross workspaces", async () => {
+    await writeMemory(config, WORKSPACE_A, memoryRecord("mem_iso", "char_iso"));
+
+    expect(await listCharacterMemories(config, WORKSPACE_B, "char_iso")).toEqual([]);
   });
 });
 

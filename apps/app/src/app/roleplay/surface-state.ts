@@ -1,4 +1,4 @@
-import type { CharacterCardV2, RoleplayPersona } from "@openwork/types/roleplay";
+import type { CharacterCardV2, RoleplayMemoryRecord, RoleplayPersona } from "@openwork/types/roleplay";
 
 /**
  * What the chat surface needs to know to render a session as roleplay.
@@ -21,4 +21,8 @@ export type RoleplaySurfaceState = {
   greeting: string;
   /** User-authored continuity notes; compiled into `system` on every turn. */
   storySoFar: string;
+  /** Approved memories for this character; budgeted, then compiled into `system`. */
+  memories: RoleplayMemoryRecord[];
+  /** Which character the session is bound to, so a memory approved mid-chat knows where to go. */
+  characterId: string;
 };

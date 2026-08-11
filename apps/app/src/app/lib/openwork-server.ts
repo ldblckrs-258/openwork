@@ -8,6 +8,7 @@ import {
 import { normalizeBaseUrl } from "@openwork/types/url";
 import type {
   RoleplayCharacterRecord,
+  RoleplayMemoryRecord,
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
   RoleplayTurnRecord,
@@ -1590,6 +1591,24 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         baseUrl,
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/turns/${encodeURIComponent(turn.turnId)}`,
         { token, hostToken, method: "PUT", body: { turn }, timeoutMs: timeouts.config },
+      ),
+    listRoleplayMemories: (workspaceId: string, characterId: string) =>
+      requestJson<{ memories: RoleplayMemoryRecord[] }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/characters/${encodeURIComponent(characterId)}/memories`,
+        { token, hostToken, timeoutMs: timeouts.sessionRead },
+      ),
+    putRoleplayMemory: (workspaceId: string, memory: RoleplayMemoryRecord) =>
+      requestJson<{ memory: RoleplayMemoryRecord }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/memories/${encodeURIComponent(memory.id)}`,
+        { token, hostToken, method: "PUT", body: { memory }, timeoutMs: timeouts.config },
+      ),
+    deleteRoleplayMemory: (workspaceId: string, memoryId: string) =>
+      requestJson<{ deleted: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/memories/${encodeURIComponent(memoryId)}`,
+        { token, hostToken, method: "DELETE", timeoutMs: timeouts.config },
       ),
     getSessionGroups: (workspaceId: string) =>
       requestJson<{ state: OpenworkSessionGroupState; updatedAt: number | null }>(

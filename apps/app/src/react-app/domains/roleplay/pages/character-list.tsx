@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import type { RoleplayCharacterRecord } from "@openwork/types/roleplay";
-import { Copy, Drama, MessageCircle, Plus, Sparkles, Trash2, Upload } from "lucide-react";
+import { Brain, Copy, Drama, MessageCircle, Plus, Sparkles, Trash2, Upload } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ type CharacterListProps = {
   onStartChat?: (character: RoleplayCharacterRecord) => void;
   onGenerate?: () => void;
   onImport: () => void;
+  onOpenMemories: (character: RoleplayCharacterRecord) => void;
 };
 
 export function CharacterList({
@@ -35,6 +36,7 @@ export function CharacterList({
   onStartChat,
   onGenerate,
   onImport,
+  onOpenMemories,
 }: CharacterListProps) {
   if (loading) {
     return (
@@ -130,6 +132,15 @@ export function CharacterList({
                 Chat
               </Button>
             ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={`Memories for ${character.card.data.name}`}
+              onClick={() => onOpenMemories(character)}
+            >
+              <Brain className="size-4" />
+            </Button>
             <Button
               type="button"
               variant="ghost"

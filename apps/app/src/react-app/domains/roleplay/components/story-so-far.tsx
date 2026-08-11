@@ -10,10 +10,12 @@ type StorySoFarProps = {
   saving: boolean;
   /** Set once the conversation has been compacted, so the notice explains why this matters now. */
   compacted: boolean;
+  memoryBusy: boolean;
   onSave: (value: string) => void;
+  onExtractMemories: () => void;
 };
 
-export function StorySoFar({ value, saving, compacted, onSave }: StorySoFarProps) {
+export function StorySoFar({ value, saving, compacted, memoryBusy, onSave, onExtractMemories }: StorySoFarProps) {
   const [draft, setDraft] = React.useState(value);
   const [open, setOpen] = React.useState(false);
 
@@ -31,9 +33,16 @@ export function StorySoFar({ value, saving, compacted, onSave }: StorySoFarProps
         ) : (
           <span />
         )}
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
-          Story so far
-        </Button>
+        <div className="flex items-center gap-1">
+          {/* Deliberately a button rather than something that fires on its own:
+              extraction is an extra completion over the whole transcript. */}
+          <Button type="button" variant="ghost" size="sm" disabled={memoryBusy} onClick={onExtractMemories}>
+            {memoryBusy ? "Thinking…" : "Remember this"}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(true)}>
+            Story so far
+          </Button>
+        </div>
       </div>
     );
   }

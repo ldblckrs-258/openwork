@@ -1,8 +1,9 @@
-import type { CharacterCardV2, RoleplayPersona } from "@openwork/types/roleplay";
+import type { CharacterCardV2, RoleplayMemoryRecord, RoleplayPersona } from "@openwork/types/roleplay";
 
 import { compilePrompt } from "./compile-prompt.js";
 import { composeSystem, type ComposedSystem } from "./compose-system.js";
 import { substituteMacros } from "./macros.js";
+import { selectMemories } from "./memory.js";
 import { roleplayPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
 
 export type RoleplayTurnInput = {
@@ -16,6 +17,8 @@ export type RoleplayTurnInput = {
   directorText?: string;
   /** User-authored continuity notes; carries the scene across a compaction. */
   storySoFar?: string;
+  /** Approved memories for this character. Budgeted before they reach the prompt. */
+  memories?: RoleplayMemoryRecord[];
   envContext: string | null | undefined;
 };
 
@@ -46,8 +49,15 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
   const char = (input.charName ?? input.card.data.name).trim() || "Character";
   const user = input.persona.name.trim() || "User";
   const story = substituteMacros(input.storySoFar ?? "", { char, user }).trim();
+  // Budgeted here rather than inside `compilePrompt`: the compiler takes already
+  // chosen injections and ranks them against the lorebook, so deciding *which*
+  // memories are candidates has to happen before it sees them.
+  const memories = selectMemories(input.memories ?? []).injections;
   const characterPrompt = [
-    compilePrompt(input.card, input.persona, input.charName ? { charName: input.charName } : {}),
+    compilePrompt(input.card, input.persona, {
+      ...(input.charName ? { charName: input.charName } : {}),
+      memories,
+    }),
     input.greeting ? openingLine(input.greeting, char, user) : "",
     // After the story so far, because it describes where the scene has got to
     // rather than who the character is.

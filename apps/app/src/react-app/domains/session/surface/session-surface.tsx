@@ -304,10 +304,13 @@ export type RoleplayControls = {
   storySoFar: string;
   storySaving: boolean;
   compacted: boolean;
+  memoryBusy: boolean;
   onSwipe: () => void;
   onSelectAlternative: (offset: number) => void;
   onBranch: () => void;
   onSaveStorySoFar: (value: string) => void;
+  /** Proposes memories from this conversation. User-triggered: it costs a completion. */
+  onExtractMemories: () => void;
 };
 
 export type SessionSurfaceProps = {
@@ -2184,7 +2187,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
               value={props.roleplayControls.storySoFar}
               saving={props.roleplayControls.storySaving}
               compacted={props.roleplayControls.compacted}
+              memoryBusy={props.roleplayControls.memoryBusy}
               onSave={props.roleplayControls.onSaveStorySoFar}
+              onExtractMemories={props.roleplayControls.onExtractMemories}
             />
           </>
         ) : null}

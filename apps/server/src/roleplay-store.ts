@@ -17,10 +17,12 @@ import type { ZodType } from "zod";
 import {
   ROLEPLAY_STORE_SCHEMA_VERSION,
   roleplayCharacterRecordSchema,
+  roleplayMemoryRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
   type RoleplayCharacterRecord,
+  type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
   type RoleplaySessionBinding,
   type RoleplayTurnRecord,
@@ -31,6 +33,15 @@ import { createWorkspaceKvStore, isRecord } from "./workspace-kv-store.js";
 
 /** Retained composer turns per session. Blocks grow with conversation length and are never read in bulk. */
 export const MAX_RETAINED_TURNS_PER_SESSION = 200;
+
+/**
+ * Retained memories per character.
+ *
+ * Far more than the injection budget will ever fit, so this is a storage bound
+ * rather than a prompt one — it stops a library from growing without limit while
+ * leaving the prompt-side selection entirely to `memory.ts`.
+ */
+export const MAX_MEMORIES_PER_CHARACTER = 500;
 
 type Document<T> = Record<string, T>;
 
@@ -156,6 +167,7 @@ const characterStore = createDocumentStore("roleplay_characters", "characters_js
 const personaStore = createDocumentStore("roleplay_personas", "personas_json", roleplayPersonaRecordSchema);
 const sessionStore = createDocumentStore("roleplay_sessions", "sessions_json", roleplaySessionBindingSchema);
 const turnStore = createDocumentStore("roleplay_turns", "turns_json", roleplayTurnRecordSchema);
+const memoryStore = createDocumentStore("roleplay_memories", "memories_json", roleplayMemoryRecordSchema);
 
 export async function listCharacters(config: ServerConfig, workspaceId: string): Promise<RoleplayCharacterRecord[]> {
   const document = await characterStore.read(config, workspaceId);
@@ -319,6 +331,49 @@ export async function listSessionTurns(
   return Object.values(await turnStore.read(config, workspaceId))
     .filter((entry) => entry.sessionId === sessionId)
     .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+/** Oldest first, so the management page reads in the order the character learned things. */
+export async function listCharacterMemories(
+  config: ServerConfig,
+  workspaceId: string,
+  characterId: string,
+): Promise<RoleplayMemoryRecord[]> {
+  return Object.values(await memoryStore.read(config, workspaceId))
+    .filter((entry) => entry.characterId === characterId)
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+/**
+ * Store or replace a memory.
+ *
+ * Only ever called for something a person approved: proposals live in the review
+ * UI and never reach here, which is what makes "nothing persists unreviewed" a
+ * property of the design rather than of a flag someone has to set correctly.
+ */
+export async function writeMemory(
+  config: ServerConfig,
+  workspaceId: string,
+  record: RoleplayMemoryRecord,
+): Promise<RoleplayMemoryRecord> {
+  return memoryStore.updateDocument(config, workspaceId, (current) => {
+    const next = { ...current, [record.id]: record };
+    const stale = Object.values(next)
+      .filter((entry) => entry.characterId === record.characterId)
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .slice(MAX_MEMORIES_PER_CHARACTER);
+    for (const entry of stale) delete next[entry.id];
+    return { next, result: record };
+  });
+}
+
+export async function deleteMemory(config: ServerConfig, workspaceId: string, memoryId: string): Promise<boolean> {
+  return memoryStore.updateDocument(config, workspaceId, (current) => {
+    if (!(memoryId in current)) return { next: current, result: false };
+    const next = { ...current };
+    delete next[memoryId];
+    return { next, result: true };
+  });
 }
 
 export async function pruneSessionTurns(

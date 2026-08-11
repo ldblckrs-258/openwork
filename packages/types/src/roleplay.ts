@@ -222,3 +222,32 @@ export const roleplayTurnRecordSchema = z.object({
   createdAt: timestamp,
 })
 export type RoleplayTurnRecord = z.infer<typeof roleplayTurnRecordSchema>
+
+/**
+ * Where an approved memory came from.
+ *
+ * Not a review state — there is no `pending` here on purpose. A proposal lives
+ * in the review UI and is never written, so the store can only ever hold
+ * memories a person accepted. `extracted` records that the wording started as
+ * model output, which is what the injection budget ranks below the user's own.
+ */
+export const roleplayMemorySourceSchema = z.enum(["user", "extracted"])
+export type RoleplayMemorySource = z.infer<typeof roleplayMemorySourceSchema>
+
+/**
+ * One thing a character knows across sessions.
+ *
+ * Keyed per character rather than per session: the entire point is that it
+ * outlives the conversation it came from. `sessionId` is provenance only.
+ */
+export const roleplayMemoryRecordSchema = z.object({
+  id: idString,
+  characterId: idString,
+  text: looseString,
+  source: roleplayMemorySourceSchema.catch("user"),
+  /** The conversation this was learned in, when it came from one. */
+  sessionId: looseOptionalString,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+})
+export type RoleplayMemoryRecord = z.infer<typeof roleplayMemoryRecordSchema>

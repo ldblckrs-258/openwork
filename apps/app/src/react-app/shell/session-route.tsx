@@ -44,14 +44,24 @@ import {
 import { compileBlocks } from "@/app/roleplay/blocks";
 import { decideCompaction, MIN_TURNS_BEFORE_COMPACT } from "@/app/roleplay/compact-policy";
 import type { GenerationRequest } from "@/app/roleplay/generation/prompts";
+import { createMemory, createMemoryId } from "@/app/roleplay/memory";
+import {
+  buildMemoryExtractRequest,
+  buildTranscriptText,
+  parseMemoryProposals,
+  type MemoryProposal,
+} from "@/app/roleplay/memory-extract";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
   useBindRoleplaySession,
+  useRoleplayMemories,
   useRoleplayPersonas,
   useRoleplaySessionBinding,
   useRoleplayTurns,
+  useSaveRoleplayMemory,
   useSaveRoleplayTurn,
 } from "@/react-app/domains/roleplay/state/roleplay-queries";
+import { MemoryReview } from "@/react-app/domains/roleplay/components/memory-review";
 import { RoleplayPage } from "@/react-app/domains/roleplay/pages/roleplay-page";
 import {
   getDesktopHomeDir,
@@ -693,6 +703,10 @@ export function SessionRoute() {
   const roleplayBindingQuery = useRoleplaySessionBinding(selectedWorkspaceEndpoint, selectedSessionId);
   const roleplayPersonasQuery = useRoleplayPersonas(selectedWorkspaceEndpoint);
   const bindRoleplaySession = useBindRoleplaySession(selectedWorkspaceEndpoint);
+  const roleplayMemoriesQuery = useRoleplayMemories(
+    selectedWorkspaceEndpoint,
+    roleplayBindingQuery.data?.binding?.characterId ?? null,
+  );
   const roleplaySurface = useMemo<RoleplaySurfaceState | null>(() => {
     const binding = roleplayBindingQuery.data?.binding;
     const character = roleplayBindingQuery.data?.character;
@@ -705,10 +719,16 @@ export function SessionRoute() {
       persona: persona?.persona ?? { name: "", description: "" },
       greeting: character.card.data.first_mes,
       storySoFar: binding.storySoFar,
+      memories: roleplayMemoriesQuery.data ?? [],
+      characterId: binding.characterId,
     };
-  }, [roleplayBindingQuery.data, roleplayPersonasQuery.data]);
+  }, [roleplayBindingQuery.data, roleplayMemoriesQuery.data, roleplayPersonasQuery.data]);
   const roleplayTurnsQuery = useRoleplayTurns(selectedWorkspaceEndpoint, roleplaySurface ? selectedSessionId : null);
   const saveRoleplayTurn = useSaveRoleplayTurn(selectedWorkspaceEndpoint);
+  const saveRoleplayMemory = useSaveRoleplayMemory(selectedWorkspaceEndpoint);
+  const [memoryProposals, setMemoryProposals] = useState<MemoryProposal[]>([]);
+  const [memoryReviewOpen, setMemoryReviewOpen] = useState(false);
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const [roleplayBusy, setRoleplayBusy] = useState(false);
   const [roleplayCompacted, setRoleplayCompacted] = useState(false);
   // Compaction and the abort/revert/prompt chain are independent calls against
@@ -1319,6 +1339,8 @@ export function SessionRoute() {
             storySoFar: roleplaySurface.storySoFar,
             storySaving: bindRoleplaySession.isPending,
             compacted: roleplayCompacted,
+            memoryBusy,
+            onExtractMemories: () => void handleExtractMemories(),
             onSwipe: () => void handleRoleplaySwipe(),
             onSelectAlternative: handleRoleplaySelectAlternative,
             onBranch: () => void handleRoleplayBranch(),
@@ -1482,6 +1504,11 @@ export function SessionRoute() {
                       card: roleplaySurface.card,
                       persona: roleplaySurface.persona,
                       greeting: roleplaySurface.greeting,
+                      // Both of these must match what the regenerate path passes.
+                      // A send and its own regenerate composing different system
+                      // strings reads as the model ignoring the user's notes.
+                      storySoFar: roleplaySurface.storySoFar,
+                      memories: roleplaySurface.memories,
                       directorText: draft.directorText,
                       envContext: envSystemContext ?? null,
                     })
@@ -2073,6 +2100,7 @@ export function SessionRoute() {
         persona: roleplaySurface.persona,
         greeting: roleplaySurface.greeting,
         storySoFar: roleplaySurface.storySoFar,
+        memories: roleplaySurface.memories,
         directorText: compiled.directorText,
         envContext: envSystemContext ?? null,
       });
@@ -2186,6 +2214,87 @@ export function SessionRoute() {
     selectedWorkspaceEndpoint,
     selectedWorkspaceId,
   ]);
+
+  /**
+   * Ask the model what this conversation is worth remembering.
+   *
+   * User-triggered rather than automatic at compaction. Extraction is a whole
+   * extra completion over the transcript, and running it unasked on every long
+   * conversation spends the user's money on a review dialog they may not want.
+   *
+   * Nothing is written here. The proposals go to the review dialog, and only
+   * what a person keeps is persisted — a memory that misreads the transcript
+   * becomes a permanent false fact the character repeats with confidence.
+   */
+  const handleExtractMemories = useCallback(async () => {
+    if (!opencodeClient || !selectedSessionId || !roleplaySurface) return;
+    setMemoryBusy(true);
+    try {
+      const history = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId })) ?? [];
+      const transcript = buildTranscriptText(
+        history
+          .filter((entry) => entry.info.role === "user" || entry.info.role === "assistant")
+          .map((entry) => ({
+            role: entry.info.role === "user" ? "user" as const : "assistant" as const,
+            text: (entry.parts ?? [])
+              .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+              .map((part) => part.text)
+              .join(""),
+          })),
+        roleplaySurface.characterName || "The character",
+        roleplaySurface.persona.name || "User",
+      );
+      if (!transcript.trim()) {
+        toast.info("Nothing to remember yet", { description: "This conversation has no exchanges." });
+        return;
+      }
+
+      const raw = await handleRunGeneration(
+        buildMemoryExtractRequest({ transcript, charName: roleplaySurface.characterName || "The character" }),
+      );
+      const parsed = parseMemoryProposals(raw, roleplaySurface.memories);
+      if (!parsed.ok) {
+        toast.error("Could not read what the model proposed", { description: parsed.error });
+        return;
+      }
+      setMemoryProposals(parsed.proposals);
+      setMemoryReviewOpen(true);
+    } catch (error) {
+      toast.error("Could not work out what to remember", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setMemoryBusy(false);
+    }
+  }, [handleRunGeneration, opencodeClient, roleplaySurface, selectedSessionId]);
+
+  const handleKeepMemories = useCallback(async (texts: string[]) => {
+    if (!roleplaySurface) return;
+    setMemoryBusy(true);
+    try {
+      for (const text of texts) {
+        await saveRoleplayMemory.mutateAsync(
+          createMemory({
+            id: createMemoryId(Date.now(), Math.random().toString(36).slice(2, 8)),
+            characterId: roleplaySurface.characterId,
+            text,
+            source: "extracted",
+            ...(selectedSessionId ? { sessionId: selectedSessionId } : {}),
+            now: Date.now(),
+          }),
+        );
+      }
+      toast.success(`${roleplaySurface.characterName || "The character"} will remember ${texts.length === 1 ? "that" : `those ${texts.length}`}`);
+      setMemoryReviewOpen(false);
+      setMemoryProposals([]);
+    } catch (error) {
+      toast.error("Could not save the memories", {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setMemoryBusy(false);
+    }
+  }, [roleplaySurface, saveRoleplayMemory, selectedSessionId]);
 
   const handleSaveStorySoFar = useCallback(async (value: string) => {
     const binding = roleplayBindingQuery.data?.binding;
@@ -3382,6 +3491,16 @@ export function SessionRoute() {
       onRefreshOpenWorkModels={refreshOpenWorkModels}
       onRefreshOrganizationModels={refreshOrganizationModelAccess}
       restrictToCloud={restrictToCloudProviders}
+    />
+    <MemoryReview
+      open={memoryReviewOpen}
+      proposals={memoryProposals}
+      saving={memoryBusy}
+      onKeep={(texts) => void handleKeepMemories(texts)}
+      onClose={() => {
+        setMemoryReviewOpen(false);
+        setMemoryProposals([]);
+      }}
     />
     </WorkspaceProvider>
   );

@@ -29,6 +29,7 @@ import { CharacterEditor } from "./character-editor";
 import { CharacterGenerate } from "./character-generate";
 import { CharacterImport } from "./character-import";
 import { CharacterList } from "./character-list";
+import { CharacterMemories } from "./character-memories";
 import { PersonaEditor } from "./persona-editor";
 
 type RoleplayPageProps = {
@@ -56,6 +57,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
   );
   const [generating, setGenerating] = React.useState(false);
   const [importing, setImporting] = React.useState(false);
+  const [remembering, setRemembering] = React.useState<RoleplayCharacterRecord | null>(null);
 
   const personaRecord: RoleplayPersonaRecord = React.useMemo(
     () =>
@@ -98,6 +100,16 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         saving={saveCharacter.isPending}
         onCancel={() => setEditing(null)}
         onSave={(character) => persist(character, "Character saved")}
+      />
+    );
+  }
+
+  if (remembering) {
+    return (
+      <CharacterMemories
+        endpoint={endpoint}
+        character={remembering}
+        onBack={() => setRemembering(null)}
       />
     );
   }
@@ -156,6 +168,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         onOpen={(character) => setEditing(character)}
         onGenerate={onRunGeneration ? () => setGenerating(true) : undefined}
         onImport={() => setImporting(true)}
+        onOpenMemories={(character) => setRemembering(character)}
         onStartChat={
           onStartChat
             ? (character) => {

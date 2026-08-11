@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type {
   RoleplayCharacterRecord,
+  RoleplayMemoryRecord,
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
   RoleplayTurnRecord,
@@ -155,6 +156,62 @@ export function useSaveRoleplayTurn(endpoint: ResolvedWorkspaceEndpoint | null) 
     onSuccess: async (turn) => {
       if (endpoint) {
         await queryClient.invalidateQueries({ queryKey: roleplayTurnsQueryKey(endpoint.workspaceId, turn.sessionId) });
+      }
+    },
+  });
+}
+
+export function roleplayMemoriesQueryKey(workspaceId: string, characterId: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "memories", workspaceId, characterId] as const;
+}
+
+/**
+ * Memories are read on every roleplay session, because they are compiled into
+ * `system` on every turn. An unbound or memory-less character must therefore
+ * resolve to a cheap cached empty list rather than to an error.
+ */
+export function useRoleplayMemories(endpoint: ResolvedWorkspaceEndpoint | null, characterId: string | null) {
+  return useQuery({
+    queryKey: roleplayMemoriesQueryKey(endpoint?.workspaceId ?? "", characterId ?? ""),
+    enabled: Boolean(endpoint) && Boolean(characterId),
+    staleTime: 30_000,
+    queryFn: async () => {
+      if (!endpoint || !characterId) return [];
+      return (await endpoint.client.listRoleplayMemories(endpoint.workspaceId, characterId)).memories;
+    },
+  });
+}
+
+export function useSaveRoleplayMemory(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (memory: RoleplayMemoryRecord) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return (await endpoint.client.putRoleplayMemory(endpoint.workspaceId, memory)).memory;
+    },
+    onSuccess: async (memory) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({
+          queryKey: roleplayMemoriesQueryKey(endpoint.workspaceId, memory.characterId),
+        });
+      }
+    },
+  });
+}
+
+export function useDeleteRoleplayMemory(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { memoryId: string; characterId: string }) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      await endpoint.client.deleteRoleplayMemory(endpoint.workspaceId, input.memoryId);
+      return input;
+    },
+    onSuccess: async (input) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({
+          queryKey: roleplayMemoriesQueryKey(endpoint.workspaceId, input.characterId),
+        });
       }
     },
   });

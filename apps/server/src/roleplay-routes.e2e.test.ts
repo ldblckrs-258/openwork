@@ -324,6 +324,57 @@ describe("roleplay routes", () => {
     expect(read.binding.storySoFar).toBe("Aria still refuses to name the ledger's owner.");
   });
 
+  test("a memory round-trips, is listed per character, and can be forgotten", async () => {
+    // Memories are the one roleplay record with no tombstone: nothing points at
+    // them, and a "forget" that left the fact on disk would misdescribe the
+    // button.
+    const { base, token } = await startOpenworkServer();
+    const memory = {
+      id: "mem_1",
+      characterId: "char_1",
+      text: "Wren works nights at the harbour.",
+      source: "user",
+      createdAt: 5,
+      updatedAt: 5,
+    };
+
+    const written = await fetch(`${base}/workspace/ws_1/roleplay/memories/mem_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ memory }),
+    });
+    expect(written.status).toBe(200);
+
+    const listed = await (await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1/memories`, { headers: auth(token) })).json();
+    expect(listed.memories.map((entry: { text: string }) => entry.text)).toEqual(["Wren works nights at the harbour."]);
+
+    const other = await (await fetch(`${base}/workspace/ws_1/roleplay/characters/char_2/memories`, { headers: auth(token) })).json();
+    expect(other.memories).toEqual([]);
+
+    const forgotten = await (await fetch(`${base}/workspace/ws_1/roleplay/memories/mem_1`, {
+      method: "DELETE",
+      headers: auth(token),
+    })).json();
+    expect(forgotten.deleted).toBe(true);
+
+    const after = await (await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1/memories`, { headers: auth(token) })).json();
+    expect(after.memories).toEqual([]);
+  });
+
+  test("a memory whose body id disagrees with the path is refused", async () => {
+    const { base, token } = await startOpenworkServer();
+
+    const response = await fetch(`${base}/workspace/ws_1/roleplay/memories/mem_path`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({
+        memory: { id: "mem_body", characterId: "char_1", text: "x", source: "user", createdAt: 1, updatedAt: 1 },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+  });
+
   test("characters are isolated per workspace", async () => {
     const { base, token } = await startOpenworkServer();
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_a`, {
