@@ -1,13 +1,13 @@
 import { ApiError } from "../errors.js";
 import {
   roleplayCharacterRecordSchema,
-  roleplayMessageBlocksRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
+  roleplayTurnRecordSchema,
   type RoleplayCharacterRecord,
-  type RoleplayMessageBlocksRecord,
   type RoleplayPersonaRecord,
   type RoleplaySessionBinding,
+  type RoleplayTurnRecord,
 } from "@openwork/types/roleplay";
 import {
   bindSession,
@@ -17,11 +17,11 @@ import {
   listCharacters,
   listPersonas,
   readCharacter,
-  readMessageBlocks,
+  listSessionTurns,
   readSessionBinding,
   writeCharacter,
-  writeMessageBlocks,
   writePersona,
+  writeTurn,
 } from "../roleplay-store.js";
 import type { ServerConfig, TokenScope, WorkspaceInfo } from "../types.js";
 import { addRoute, type RequestContext, type Route } from "./registry.js";
@@ -71,10 +71,10 @@ function parseBinding(body: Record<string, unknown>): RoleplaySessionBinding {
   return parsed.data;
 }
 
-function parseMessageBlocks(body: Record<string, unknown>): RoleplayMessageBlocksRecord {
-  const parsed = roleplayMessageBlocksRecordSchema.safeParse(body.record);
+function parseTurn(body: Record<string, unknown>): RoleplayTurnRecord {
+  const parsed = roleplayTurnRecordSchema.safeParse(body.turn);
   if (!parsed.success) {
-    throw new ApiError(400, "invalid_message_blocks", `Invalid message blocks: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+    throw new ApiError(400, "invalid_turn", `Invalid turn: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
   }
   return parsed.data;
 }
@@ -167,22 +167,23 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     return jsonResponse({ cleared: await clearSessionBinding(config, workspace.id, ctx.params.sessionId) });
   });
 
-  // Director text lives in `system`, not in message history, so a regenerate
-  // would lose it unless the turn's blocks were stored alongside the message.
-  addRoute(routes, "GET", "/workspace/:id/roleplay/messages/:messageId/blocks", "client", async (ctx) => {
+  // Director text lives in `system`, not in message history, and a regenerate
+  // destroys the reply it replaces. Both are why a turn is stored here rather
+  // than reconstructed from the transcript.
+  addRoute(routes, "GET", "/workspace/:id/roleplay/sessions/:sessionId/turns", "client", async (ctx) => {
     const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
-    return jsonResponse({ blocks: (await readMessageBlocks(config, workspace.id, ctx.params.messageId)) ?? null });
+    return jsonResponse({ turns: await listSessionTurns(config, workspace.id, ctx.params.sessionId) });
   });
 
-  addRoute(routes, "PUT", "/workspace/:id/roleplay/messages/:messageId/blocks", "client", async (ctx) => {
+  addRoute(routes, "PUT", "/workspace/:id/roleplay/turns/:turnId", "client", async (ctx) => {
     ensureWritable(config);
     requireClientScope(ctx, "collaborator");
     const workspace = await resolveWorkspace(config, ctx.params.id);
     const body = await readJsonBody(ctx.request);
-    const record = parseMessageBlocks(body);
-    if (record.messageId !== ctx.params.messageId) {
-      throw new ApiError(400, "message_id_mismatch", "Message id in the body does not match the path");
+    const turn = parseTurn(body);
+    if (turn.turnId !== ctx.params.turnId) {
+      throw new ApiError(400, "turn_id_mismatch", "Turn id in the body does not match the path");
     }
-    return jsonResponse({ record: await writeMessageBlocks(config, workspace.id, record) });
+    return jsonResponse({ turn: await writeTurn(config, workspace.id, turn) });
   });
 }

@@ -17,14 +17,13 @@ import type { ZodType } from "zod";
 import {
   ROLEPLAY_STORE_SCHEMA_VERSION,
   roleplayCharacterRecordSchema,
-  roleplayMessageBlocksRecordSchema,
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
-  type RoleplayBlock,
+  roleplayTurnRecordSchema,
   type RoleplayCharacterRecord,
-  type RoleplayMessageBlocksRecord,
   type RoleplayPersonaRecord,
   type RoleplaySessionBinding,
+  type RoleplayTurnRecord,
 } from "@openwork/types/roleplay";
 import { runtimeDbPath } from "./runtime-db.js";
 import type { ServerConfig } from "./types.js";
@@ -156,7 +155,7 @@ function createDocumentStore<T>(tableName: string, valueColumn: string, schema: 
 const characterStore = createDocumentStore("roleplay_characters", "characters_json", roleplayCharacterRecordSchema);
 const personaStore = createDocumentStore("roleplay_personas", "personas_json", roleplayPersonaRecordSchema);
 const sessionStore = createDocumentStore("roleplay_sessions", "sessions_json", roleplaySessionBindingSchema);
-const messageBlockStore = createDocumentStore("roleplay_message_blocks", "blocks_json", roleplayMessageBlocksRecordSchema);
+const turnStore = createDocumentStore("roleplay_turns", "turns_json", roleplayTurnRecordSchema);
 
 export async function listCharacters(config: ServerConfig, workspaceId: string): Promise<RoleplayCharacterRecord[]> {
   const document = await characterStore.read(config, workspaceId);
@@ -276,45 +275,63 @@ export async function clearSessionBinding(
     delete next[sessionId];
     return { next, result: true };
   });
-  await pruneSessionMessageBlocks(config, workspaceId, sessionId);
+  await pruneSessionTurns(config, workspaceId, sessionId);
   return cleared;
 }
 
-export async function writeMessageBlocks(
+/**
+ * Store or replace a turn.
+ *
+ * Keyed by the client's `turnId`, not the engine's message id: a regenerate
+ * mints new ids for both the user message and the reply, so a message-keyed
+ * record would be orphaned by the one operation it exists to survive.
+ */
+export async function writeTurn(
   config: ServerConfig,
   workspaceId: string,
-  record: RoleplayMessageBlocksRecord,
-): Promise<RoleplayMessageBlocksRecord> {
-  return messageBlockStore.updateDocument(config, workspaceId, (current) => {
-    const next = { ...current, [record.messageId]: record };
-    const retained = Object.values(next)
+  record: RoleplayTurnRecord,
+): Promise<RoleplayTurnRecord> {
+  return turnStore.updateDocument(config, workspaceId, (current) => {
+    const next = { ...current, [record.turnId]: record };
+    const stale = Object.values(next)
       .filter((entry) => entry.sessionId === record.sessionId)
       .sort((left, right) => right.createdAt - left.createdAt)
       .slice(MAX_RETAINED_TURNS_PER_SESSION);
-    for (const stale of retained) delete next[stale.messageId];
+    for (const entry of stale) delete next[entry.turnId];
     return { next, result: record };
   });
 }
 
-export async function readMessageBlocks(
+export async function readTurn(
   config: ServerConfig,
   workspaceId: string,
-  messageId: string,
-): Promise<RoleplayBlock[] | undefined> {
-  return (await messageBlockStore.read(config, workspaceId))[messageId]?.blocks;
+  turnId: string,
+): Promise<RoleplayTurnRecord | undefined> {
+  return (await turnStore.read(config, workspaceId))[turnId];
 }
 
-export async function pruneSessionMessageBlocks(
+/** Oldest first, so the caller renders them in the order they were authored. */
+export async function listSessionTurns(
+  config: ServerConfig,
+  workspaceId: string,
+  sessionId: string,
+): Promise<RoleplayTurnRecord[]> {
+  return Object.values(await turnStore.read(config, workspaceId))
+    .filter((entry) => entry.sessionId === sessionId)
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+export async function pruneSessionTurns(
   config: ServerConfig,
   workspaceId: string,
   sessionId: string,
 ): Promise<number> {
-  return messageBlockStore.updateDocument(config, workspaceId, (current) => {
-    const next: Document<RoleplayMessageBlocksRecord> = {};
+  return turnStore.updateDocument(config, workspaceId, (current) => {
+    const next: Document<RoleplayTurnRecord> = {};
     let pruned = 0;
-    for (const [messageId, record] of Object.entries(current)) {
+    for (const [turnId, record] of Object.entries(current)) {
       if (record.sessionId === sessionId) pruned += 1;
-      else next[messageId] = record;
+      else next[turnId] = record;
     }
     return { next, result: pruned };
   });

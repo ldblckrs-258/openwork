@@ -17,10 +17,11 @@ import {
   listPersonas,
   MAX_RETAINED_TURNS_PER_SESSION,
   readCharacter,
-  readMessageBlocks,
+  listSessionTurns,
+  readTurn,
   readSessionBinding,
   writeCharacter,
-  writeMessageBlocks,
+  writeTurn,
   writePersona,
 } from "../../../apps/server/src/roleplay-store.ts";
 
@@ -237,6 +238,7 @@ describe("character delete", () => {
       sessionId: "ses_doomed",
       characterId: "char_doomed",
       personaId: "",
+      storySoFar: "",
       boundAt: 1_700_000_000,
     });
 
@@ -256,60 +258,86 @@ describe("character delete", () => {
   });
 });
 
-describe("message blocks", () => {
-  test("blocks are retrievable by the message id they were stored under", async () => {
-    await writeMessageBlocks(config, WORKSPACE_A, {
-      messageId: "msg_blocks",
-      sessionId: "ses_blocks",
+describe("turns", () => {
+  function turnRecord(turnId: string, sessionId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      turnId,
+      sessionId,
+      messageId: `msg_${turnId}`,
+      userText: "Still open?",
       blocks: [
-        { type: "dialogue", text: "Still open?" },
-        { type: "action", text: "shakes out an umbrella" },
-        { type: "director", text: "Aria should refuse at first." },
+        { type: "dialogue" as const, text: "Still open?" },
+        { type: "action" as const, text: "shakes out an umbrella" },
+        { type: "director" as const, text: "Aria should refuse at first." },
       ],
+      alternatives: [],
+      activeAlternative: 0,
       createdAt: 10,
-    });
+      ...overrides,
+    };
+  }
 
-    const blocks = await readMessageBlocks(config, WORKSPACE_A, "msg_blocks");
-    expect(blocks).toHaveLength(3);
-    expect(blocks?.map((block) => block.type)).toEqual(["dialogue", "action", "director"]);
+  test("a turn is retrievable by the client turn id, not the engine message id", async () => {
+    // The engine mints new message ids on every regenerate, so a message-keyed
+    // record would be orphaned by the one operation it exists to survive.
+    await writeTurn(config, WORKSPACE_A, turnRecord("turn_round_trip", "ses_turns"));
+
+    const stored = await readTurn(config, WORKSPACE_A, "turn_round_trip");
+    expect(stored?.blocks.map((block) => block.type)).toEqual(["dialogue", "action", "director"]);
+    expect(await readTurn(config, WORKSPACE_A, "msg_turn_round_trip")).toBeUndefined();
+  });
+
+  test("captured alternatives survive a rewrite of the turn", async () => {
+    // These are the only copies: the engine destroys a reverted reply as soon as
+    // the replacement prompt is dispatched.
+    await writeTurn(config, WORKSPACE_A, turnRecord("turn_alts", "ses_turns", {
+      alternatives: [
+        { text: "She says nothing.", messageId: "msg_a", createdAt: 1 },
+        { text: "She laughs.", messageId: "msg_b", createdAt: 2 },
+      ],
+      activeAlternative: 1,
+    }));
+
+    const stored = await readTurn(config, WORKSPACE_A, "turn_alts");
+    expect(stored?.alternatives.map((alternative) => alternative.text)).toEqual(["She says nothing.", "She laughs."]);
+    expect(stored?.activeAlternative).toBe(1);
+  });
+
+  test("a session's turns come back oldest first", async () => {
+    await writeTurn(config, WORKSPACE_A, turnRecord("turn_late", "ses_ordered", { createdAt: 200 }));
+    await writeTurn(config, WORKSPACE_A, turnRecord("turn_early", "ses_ordered", { createdAt: 100 }));
+
+    expect((await listSessionTurns(config, WORKSPACE_A, "ses_ordered")).map((entry) => entry.turnId))
+      .toEqual(["turn_early", "turn_late"]);
   });
 
   test("retained turns per session are capped, oldest first", async () => {
-    // Blocks grow with conversation length and are never read in bulk, so an
+    // Turns grow with conversation length and are never read in bulk, so an
     // uncapped store grows without bound inside a document that is deserialized
     // on every read.
     const total = MAX_RETAINED_TURNS_PER_SESSION + 5;
     for (let index = 0; index < total; index += 1) {
-      await writeMessageBlocks(config, WORKSPACE_A, {
-        messageId: `msg_capped_${index}`,
-        sessionId: "ses_capped",
-        blocks: [{ type: "dialogue", text: `turn ${index}` }],
-        createdAt: index,
-      });
+      await writeTurn(config, WORKSPACE_A, turnRecord(`turn_capped_${index}`, "ses_capped", { createdAt: index }));
     }
 
-    expect(await readMessageBlocks(config, WORKSPACE_A, "msg_capped_0")).toBeUndefined();
-    expect(await readMessageBlocks(config, WORKSPACE_A, `msg_capped_${total - 1}`)).toBeDefined();
+    expect(await readTurn(config, WORKSPACE_A, "turn_capped_0")).toBeUndefined();
+    expect(await readTurn(config, WORKSPACE_A, `turn_capped_${total - 1}`)).toBeDefined();
   });
 
-  test("clearing a session binding prunes that session's blocks and no others", async () => {
+  test("clearing a session binding prunes that session's turns and no others", async () => {
     await bindSession(config, WORKSPACE_A, {
       sessionId: "ses_pruned",
       characterId: "char_round_trip",
       personaId: "",
+      storySoFar: "",
       boundAt: 1,
     });
-    await writeMessageBlocks(config, WORKSPACE_A, {
-      messageId: "msg_pruned",
-      sessionId: "ses_pruned",
-      blocks: [{ type: "dialogue", text: "gone" }],
-      createdAt: 1,
-    });
+    await writeTurn(config, WORKSPACE_A, turnRecord("turn_pruned", "ses_pruned", { createdAt: 1 }));
 
     await clearSessionBinding(config, WORKSPACE_A, "ses_pruned");
 
-    expect(await readMessageBlocks(config, WORKSPACE_A, "msg_pruned")).toBeUndefined();
-    expect(await readMessageBlocks(config, WORKSPACE_A, "msg_blocks")).toBeDefined();
+    expect(await readTurn(config, WORKSPACE_A, "turn_pruned")).toBeUndefined();
+    expect(await readTurn(config, WORKSPACE_A, "turn_round_trip")).toBeDefined();
     expect(await readSessionBinding(config, WORKSPACE_A, "ses_pruned")).toBeUndefined();
   });
 });
@@ -321,7 +349,7 @@ describe("schema version", () => {
     expect(await schemaVersionOf("roleplay_characters", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_personas", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
     expect(await schemaVersionOf("roleplay_sessions", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
-    expect(await schemaVersionOf("roleplay_message_blocks", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
+    expect(await schemaVersionOf("roleplay_turns", WORKSPACE_A)).toBe(ROLEPLAY_STORE_SCHEMA_VERSION);
   });
 });
 

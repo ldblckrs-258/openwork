@@ -171,15 +171,54 @@ export const roleplaySessionBindingSchema = z.object({
   sessionId: idString,
   characterId: idString,
   personaId: looseString,
+  /**
+   * User-authored continuity notes, compiled into `system` on every turn.
+   *
+   * The engine's `summarize` call takes only a provider and a model, so a
+   * roleplay-specific summarisation prompt cannot reach it. This is what carries
+   * tone and unresolved beats across a compaction the app does not control.
+   */
+  storySoFar: looseString,
   boundAt: timestamp,
 })
 export type RoleplaySessionBinding = z.infer<typeof roleplaySessionBindingSchema>
 
-export const roleplayMessageBlocksRecordSchema = z.object({
-  messageId: idString,
-  /** Carried on the record so blocks can be pruned per session and on session delete. */
-  sessionId: idString,
-  blocks: z.array(roleplayBlockSchema).catch([]),
+/**
+ * One generated reply, kept so it survives being regenerated.
+ *
+ * The engine destroys a reverted reply the moment the next prompt is dispatched
+ * — proven in `reports/swipe-semantics-spike.md`, including when that prompt
+ * fails. So an alternative that is not copied here before the revert is gone,
+ * and swipe navigation would have nothing to navigate.
+ */
+export const roleplayAlternativeSchema = z.object({
+  text: looseString,
+  /** The engine message id this text came from, before it was discarded. */
+  messageId: looseString,
   createdAt: timestamp,
 })
-export type RoleplayMessageBlocksRecord = z.infer<typeof roleplayMessageBlocksRecordSchema>
+export type RoleplayAlternative = z.infer<typeof roleplayAlternativeSchema>
+
+/**
+ * A roleplay turn: what the user authored, and every reply it has produced.
+ *
+ * Keyed by a client-generated `turnId` rather than by the engine's message id,
+ * because a regenerate mints new ids for both the user message and the reply. A
+ * store keyed by message id would be orphaned by the exact operation the blocks
+ * were persisted to survive.
+ */
+export const roleplayTurnRecordSchema = z.object({
+  turnId: idString,
+  /** Carried on the record so turns can be pruned per session and on session delete. */
+  sessionId: idString,
+  /** The engine's current user-message id for this turn; changes on every swipe. */
+  messageId: looseString,
+  /** The parts to re-send when regenerating. `parts: []` blanks the user's message. */
+  userText: looseString,
+  blocks: z.array(roleplayBlockSchema).catch([]),
+  alternatives: z.array(roleplayAlternativeSchema).catch([]),
+  /** Index into `alternatives` the transcript is currently showing. */
+  activeAlternative: z.number().int().nonnegative().catch(0),
+  createdAt: timestamp,
+})
+export type RoleplayTurnRecord = z.infer<typeof roleplayTurnRecordSchema>

@@ -203,7 +203,7 @@ describe("roleplay routes", () => {
     const bound = await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
       method: "PUT",
       headers: auth(token),
-      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", boundAt: 5 } }),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", storySoFar: "", boundAt: 5 } }),
     });
     expect(bound.status).toBe(200);
 
@@ -223,7 +223,7 @@ describe("roleplay routes", () => {
     await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
       method: "PUT",
       headers: auth(token),
-      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", boundAt: 5 } }),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", storySoFar: "", boundAt: 5 } }),
     });
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, { method: "DELETE", headers: auth(token) });
 
@@ -232,31 +232,38 @@ describe("roleplay routes", () => {
     expect(read.characterDeleted).toBe(true);
   });
 
-  test("a turn's blocks are stored against its message so a regenerate can recompose it", async () => {
-    // Director text lives in `system`, not in message history. Without this the
-    // steering silently disappears on the first swipe and the character appears
-    // to ignore an instruction the user just gave.
+  test("a turn is stored under its client turn id so a regenerate cannot orphan it", async () => {
+    // Director text lives in `system`, not in message history, and the engine
+    // mints new message ids on every regenerate. A message-keyed record would be
+    // orphaned by the exact operation it exists to survive.
     const { base, token } = await startOpenworkServer();
-    const record = {
-      record: {
-        messageId: "msg_1",
+    const turn = {
+      turn: {
+        turnId: "turn_1",
         sessionId: "ses_1",
+        messageId: "msg_1",
+        userText: '"Where is the ledger?"',
         blocks: [
           { type: "action", text: "straightens papers" },
           { type: "director", text: "keep her evasive" },
         ],
+        alternatives: [{ text: "She says nothing.", messageId: "msg_reply_1", createdAt: 6 }],
+        activeAlternative: 0,
         createdAt: 7,
       },
     };
 
-    expect((await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, {
+    expect((await fetch(`${base}/workspace/ws_1/roleplay/turns/turn_1`, {
       method: "PUT",
       headers: auth(token),
-      body: JSON.stringify(record),
+      body: JSON.stringify(turn),
     })).status).toBe(200);
 
-    const read = await (await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, { headers: auth(token) })).json();
-    expect(read.blocks).toEqual(record.record.blocks);
+    const listed = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/turns`, { headers: auth(token) })).json();
+    expect(listed.turns).toHaveLength(1);
+    expect(listed.turns[0].blocks).toEqual(turn.turn.blocks);
+    // The captured reply is the only copy left once the engine has replaced it.
+    expect(listed.turns[0].alternatives[0].text).toBe("She says nothing.");
   });
 
   test("clearing a binding also drops the turns stored for that session", async () => {
@@ -264,12 +271,23 @@ describe("roleplay routes", () => {
     await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
       method: "PUT",
       headers: auth(token),
-      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", boundAt: 5 } }),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", storySoFar: "", boundAt: 5 } }),
     });
-    await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, {
+    await fetch(`${base}/workspace/ws_1/roleplay/turns/turn_1`, {
       method: "PUT",
       headers: auth(token),
-      body: JSON.stringify({ record: { messageId: "msg_1", sessionId: "ses_1", blocks: [{ type: "plain", text: "hi" }], createdAt: 7 } }),
+      body: JSON.stringify({
+        turn: {
+          turnId: "turn_1",
+          sessionId: "ses_1",
+          messageId: "msg_1",
+          userText: "hi",
+          blocks: [{ type: "plain", text: "hi" }],
+          alternatives: [],
+          activeAlternative: 0,
+          createdAt: 7,
+        },
+      }),
     });
 
     const cleared = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
@@ -278,8 +296,32 @@ describe("roleplay routes", () => {
     })).json();
     expect(cleared.cleared).toBe(true);
 
-    const orphaned = await (await fetch(`${base}/workspace/ws_1/roleplay/messages/msg_1/blocks`, { headers: auth(token) })).json();
-    expect(orphaned.blocks).toBeNull();
+    const orphaned = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/turns`, { headers: auth(token) })).json();
+    expect(orphaned.turns).toEqual([]);
+  });
+
+  test("the story so far round-trips on the binding", async () => {
+    // It is compiled into `system` on every turn, and it is the only thing that
+    // carries tone and unresolved beats across a compaction the app does not
+    // control: `summarize` takes no prompt parameter.
+    const { base, token } = await startOpenworkServer();
+
+    await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({
+        binding: {
+          sessionId: "ses_1",
+          characterId: "char_1",
+          personaId: "persona_1",
+          storySoFar: "Aria still refuses to name the ledger's owner.",
+          boundAt: 5,
+        },
+      }),
+    });
+
+    const read = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, { headers: auth(token) })).json();
+    expect(read.binding.storySoFar).toBe("Aria still refuses to name the ledger's owner.");
   });
 
   test("characters are isolated per workspace", async () => {
