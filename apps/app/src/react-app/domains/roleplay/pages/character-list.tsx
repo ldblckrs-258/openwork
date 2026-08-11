@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import type { RoleplayCharacterRecord } from "@openwork/types/roleplay";
-import { Copy, Drama, MessageCircle, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Copy, Drama, MessageCircle, Plus, Sparkles, Trash2, Upload } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ type CharacterListProps = {
   onDelete: (character: RoleplayCharacterRecord) => void;
   onStartChat?: (character: RoleplayCharacterRecord) => void;
   onGenerate?: () => void;
+  onImport: () => void;
 };
 
 export function CharacterList({
@@ -33,6 +34,7 @@ export function CharacterList({
   onDelete,
   onStartChat,
   onGenerate,
+  onImport,
 }: CharacterListProps) {
   if (loading) {
     return (
@@ -62,6 +64,10 @@ export function CharacterList({
               Generate one
             </Button>
           ) : null}
+          <Button variant="outline" onClick={onImport}>
+            <Upload className="size-4" />
+            Import a card
+          </Button>
           <Button variant={onGenerate ? "outline" : "default"} onClick={onCreate}>
             <Plus className="size-4" />
             New character
@@ -79,6 +85,10 @@ export function CharacterList({
           {characters.length === 1 ? "character" : "characters"}
         </p>
         <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={onImport}>
+            <Upload className="size-4" />
+            Import
+          </Button>
           {onGenerate ? (
             <Button size="sm" variant="outline" onClick={onGenerate}>
               <Sparkles className="size-4" />

@@ -27,6 +27,7 @@ import {
 } from "../state/roleplay-queries";
 import { CharacterEditor } from "./character-editor";
 import { CharacterGenerate } from "./character-generate";
+import { CharacterImport } from "./character-import";
 import { CharacterList } from "./character-list";
 import { PersonaEditor } from "./persona-editor";
 
@@ -54,6 +55,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
     null,
   );
   const [generating, setGenerating] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
 
   const personaRecord: RoleplayPersonaRecord = React.useMemo(
     () =>
@@ -100,6 +102,29 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
     );
   }
 
+  if (importing) {
+    return (
+      <CharacterImport
+        onImported={(character, losses) => {
+          setImporting(false);
+          setEditing(character);
+          // Surfaced once, here, rather than inside the editor: the losses are
+          // about the file that was read, and by the time the user saves they
+          // are looking at their own card.
+          if (losses.length > 0) {
+            toast.warning(`Imported ${character.card.data.name || "character"} with changes`, {
+              description: losses.join(" "),
+              duration: 12_000,
+            });
+          } else {
+            toast.success(`Imported ${character.card.data.name || "character"}`);
+          }
+        }}
+        onCancel={() => setImporting(false)}
+      />
+    );
+  }
+
   if (generating && onRunGeneration) {
     return (
       <CharacterGenerate
@@ -130,6 +155,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         }
         onOpen={(character) => setEditing(character)}
         onGenerate={onRunGeneration ? () => setGenerating(true) : undefined}
+        onImport={() => setImporting(true)}
         onStartChat={
           onStartChat
             ? (character) => {

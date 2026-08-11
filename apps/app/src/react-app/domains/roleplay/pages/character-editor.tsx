@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
+import { CharacterExport } from "../components/character-export";
 import { CompiledPromptDebug } from "../components/compiled-prompt-debug";
 import { ExampleDialogueEditor } from "../components/example-dialogue-editor";
 
@@ -225,13 +226,18 @@ export function CharacterEditor({
 
       <CompiledPromptDebug character={draft} persona={persona} />
 
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex items-center justify-between gap-2">
+        {/* Exports the draft on screen, not the stored record: what the user is
+            looking at is what they mean by "this character". */}
+        <CharacterExport character={draft} />
+        <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
         <Button type="submit" disabled={saving}>
           {saving ? "Saving…" : "Save character"}
         </Button>
+        </div>
       </div>
     </form>
   );
