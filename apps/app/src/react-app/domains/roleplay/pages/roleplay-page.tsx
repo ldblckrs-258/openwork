@@ -14,6 +14,7 @@ import {
   createPersonaId,
   duplicateCharacter,
 } from "@/app/roleplay/character-draft";
+import type { GenerationRequest } from "@/app/roleplay/generation/prompts";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/sonner";
@@ -25,12 +26,15 @@ import {
   useSaveRoleplayPersona,
 } from "../state/roleplay-queries";
 import { CharacterEditor } from "./character-editor";
+import { CharacterGenerate } from "./character-generate";
 import { CharacterList } from "./character-list";
 import { PersonaEditor } from "./persona-editor";
 
 type RoleplayPageProps = {
   endpoint: ResolvedWorkspaceEndpoint | null;
   onStartChat?: (characterId: string, personaId: string) => Promise<void>;
+  /** Runs one generation call. Absent when no workspace engine is reachable. */
+  onRunGeneration?: (request: GenerationRequest) => Promise<string>;
 };
 
 const FALLBACK_PERSONA: RoleplayPersona = { name: "", description: "" };
@@ -39,7 +43,7 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-export function RoleplayPage({ endpoint, onStartChat }: RoleplayPageProps) {
+export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: RoleplayPageProps) {
   const characters = useRoleplayCharacters(endpoint);
   const personas = useRoleplayPersonas(endpoint);
   const saveCharacter = useSaveRoleplayCharacter(endpoint);
@@ -49,6 +53,7 @@ export function RoleplayPage({ endpoint, onStartChat }: RoleplayPageProps) {
   const [editing, setEditing] = React.useState<RoleplayCharacterRecord | null>(
     null,
   );
+  const [generating, setGenerating] = React.useState(false);
 
   const personaRecord: RoleplayPersonaRecord = React.useMemo(
     () =>
@@ -95,6 +100,21 @@ export function RoleplayPage({ endpoint, onStartChat }: RoleplayPageProps) {
     );
   }
 
+  if (generating && onRunGeneration) {
+    return (
+      <CharacterGenerate
+        onRun={onRunGeneration}
+        // Straight into the editor, unsaved. The editor's own save is the only
+        // thing that persists a generated character.
+        onGenerated={(character) => {
+          setGenerating(false);
+          setEditing(character);
+        }}
+        onCancel={() => setGenerating(false)}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6 px-10 py-6 max-w-3xl mx-auto">
       <CharacterList
@@ -109,6 +129,7 @@ export function RoleplayPage({ endpoint, onStartChat }: RoleplayPageProps) {
           )
         }
         onOpen={(character) => setEditing(character)}
+        onGenerate={onRunGeneration ? () => setGenerating(true) : undefined}
         onStartChat={
           onStartChat
             ? (character) => {

@@ -43,6 +43,7 @@ import {
 } from "@/app/roleplay/swipe";
 import { compileBlocks } from "@/app/roleplay/blocks";
 import { decideCompaction, MIN_TURNS_BEFORE_COMPACT } from "@/app/roleplay/compact-policy";
+import type { GenerationRequest } from "@/app/roleplay/generation/prompts";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
   useBindRoleplaySession,
@@ -1975,6 +1976,48 @@ export function SessionRoute() {
   }, [bindRoleplaySession, handleCreateTaskInWorkspace, selectedWorkspaceId]);
 
   /**
+   * Run one character-generation call and hand back its raw text.
+   *
+   * Generation needs a session because a prompt is the only way to reach a model,
+   * but it is not a conversation: the session is created, used once, and deleted.
+   * It is deliberately not created through `handleCreateTaskInWorkspace`, which
+   * navigates to the new session and makes it the user's active chat.
+   *
+   * The tool boundary comes in with the request and is spread last, so nothing
+   * here can widen it — this route never builds a tool map of its own.
+   */
+  const handleRunGeneration = useCallback(async (request: GenerationRequest): Promise<string> => {
+    if (!opencodeClient) throw new Error("No workspace is connected.");
+    const directory = selectedWorkspaceRoot || undefined;
+    const { text, ...promptOptions } = request;
+    const session = unwrap(await opencodeClient.session.create({ directory, title: "Character generation" }));
+    try {
+      const reply = unwrap(
+        await opencodeClient.session.prompt({
+          sessionID: session.id,
+          ...(directory ? { directory } : {}),
+          parts: [{ type: "text", text }],
+          model: local.prefs.defaultModel ?? undefined,
+          ...promptOptions,
+        }),
+      );
+      return (reply.parts ?? [])
+        .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("");
+    } finally {
+      // A leaked scratch session is visible clutter in the sidebar, so this runs
+      // even when the prompt failed. Its own failure is not worth surfacing on
+      // top of whatever the caller is already reporting.
+      try {
+        await opencodeClient.session.delete({ sessionID: session.id, ...(directory ? { directory } : {}) });
+      } catch (error) {
+        console.warn("[roleplay] could not remove the generation session", error);
+      }
+    }
+  }, [local.prefs.defaultModel, opencodeClient, selectedWorkspaceRoot]);
+
+  /**
    * Regenerate the latest reply.
    *
    * The order is forced by the engine, not chosen: the reply must be copied
@@ -2933,7 +2976,11 @@ export function SessionRoute() {
       primarySlot={automationsRouteActive ? (
         <AutomationsPage providerCatalog={providerCatalog} />
       ) : roleplayRouteActive ? (
-        <RoleplayPage endpoint={selectedWorkspaceEndpoint ?? null} onStartChat={handleStartRoleplayChat} />
+        <RoleplayPage
+          endpoint={selectedWorkspaceEndpoint ?? null}
+          onStartChat={handleStartRoleplayChat}
+          onRunGeneration={opencodeClient ? handleRunGeneration : undefined}
+        />
       ) : undefined}
       terminalOpen={terminalOpen}
       onTerminalOpenChange={setTerminalOpen}

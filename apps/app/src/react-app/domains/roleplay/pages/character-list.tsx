@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import type { RoleplayCharacterRecord } from "@openwork/types/roleplay";
-import { Copy, Drama, MessageCircle, Plus, Trash2 } from "lucide-react";
+import { Copy, Drama, MessageCircle, Plus, Sparkles, Trash2 } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ type CharacterListProps = {
   onDuplicate: (character: RoleplayCharacterRecord) => void;
   onDelete: (character: RoleplayCharacterRecord) => void;
   onStartChat?: (character: RoleplayCharacterRecord) => void;
+  onGenerate?: () => void;
 };
 
 export function CharacterList({
@@ -31,6 +32,7 @@ export function CharacterList({
   onDuplicate,
   onDelete,
   onStartChat,
+  onGenerate,
 }: CharacterListProps) {
   if (loading) {
     return (
@@ -53,10 +55,18 @@ export function CharacterList({
             Create a character to start a roleplay conversation.
           </EmptyDescription>
         </EmptyHeader>
-        <Button onClick={onCreate}>
-          <Plus className="size-4" />
-          New character
-        </Button>
+        <div className="flex items-center gap-2">
+          {onGenerate ? (
+            <Button onClick={onGenerate}>
+              <Sparkles className="size-4" />
+              Generate one
+            </Button>
+          ) : null}
+          <Button variant={onGenerate ? "outline" : "default"} onClick={onCreate}>
+            <Plus className="size-4" />
+            New character
+          </Button>
+        </div>
       </Empty>
     );
   }
@@ -68,10 +78,18 @@ export function CharacterList({
           {characters.length}{" "}
           {characters.length === 1 ? "character" : "characters"}
         </p>
-        <Button size="sm" onClick={onCreate}>
-          <Plus className="size-4" />
-          New character
-        </Button>
+        <div className="flex items-center gap-2">
+          {onGenerate ? (
+            <Button size="sm" variant="outline" onClick={onGenerate}>
+              <Sparkles className="size-4" />
+              Generate
+            </Button>
+          ) : null}
+          <Button size="sm" onClick={onCreate}>
+            <Plus className="size-4" />
+            New character
+          </Button>
+        </div>
       </div>
 
       <ul className="flex flex-col gap-2">
