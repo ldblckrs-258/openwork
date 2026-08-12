@@ -951,13 +951,13 @@ interface AssistantMessageGroupProps {
 }
 
 /**
- * Regenerate, and step back through replies already generated.
+ * Step back through replies already generated.
  *
- * Lives in the message group's own action bar next to copy, branch, and revert,
- * because it acts on the reply it sits under. The arrows appear only once there
- * is somewhere to go: a counter reading "1 / 1" on every reply is noise.
+ * Roleplay only, and only once there is somewhere to go: a counter reading
+ * "1 / 1" on every reply is noise. Regenerate itself is not here — every
+ * session has that, so it renders beside this rather than inside it.
  */
-function RoleplaySwipeActions({ controls }: { controls: RoleplaySwipeControls | null }) {
+function RoleplayAlternativeActions({ controls }: { controls: RoleplaySwipeControls | null }) {
   if (!controls?.turn) return null
 
   const total = controls.turn.alternatives.length
@@ -998,18 +998,50 @@ function RoleplaySwipeActions({ controls }: { controls: RoleplaySwipeControls | 
           </MessageAction>
         </>
       ) : null}
-      <MessageAction tooltip="Regenerate">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Regenerate"
-          disabled={controls.busy}
-          onClick={controls.onSwipe}
-        >
-          <RefreshCw />
-        </Button>
-      </MessageAction>
     </>
+  )
+}
+
+/**
+ * Re-run the turn that produced this reply.
+ *
+ * Present on every session, not only roleplay. In roleplay with a stored turn
+ * record it goes through the swipe path, which archives the reply it replaces
+ * so the arrows above can step back to it; everywhere else it reverts to the
+ * user message and sends it again, exactly as edit-and-resend does.
+ */
+function RegenerateAction({
+  swipe,
+  assistantMessageId,
+  onRegenerate,
+  disabled,
+}: {
+  swipe: RoleplaySwipeControls | null
+  assistantMessageId: string | null
+  onRegenerate: (assistantMessageId: string) => void
+  disabled: boolean
+}) {
+  const viaSwipe = Boolean(swipe?.turn)
+  if (!viaSwipe && !assistantMessageId) return null
+
+  return (
+    <MessageAction tooltip="Regenerate">
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Regenerate"
+        disabled={disabled || Boolean(swipe?.busy)}
+        onClick={() => {
+          if (viaSwipe) {
+            swipe?.onSwipe()
+            return
+          }
+          if (assistantMessageId) onRegenerate(assistantMessageId)
+        }}
+      >
+        <RefreshCw />
+      </Button>
+    </MessageAction>
   )
 }
 
@@ -1018,7 +1050,7 @@ function MessageGroup({
   messages,
   isStreaming,
 }: AssistantMessageGroupProps) {
-  const { onRevertToUserMessage, onForkAtMessage, showThinking, roleplaySwipe } = useMessageList()
+  const { onRevertToUserMessage, onForkAtMessage, onRegenerate, showThinking, roleplaySwipe } = useMessageList()
   const lastItem = items[items.length - 1]
   // Branch/revert must target a real server-side message id. Synthetic
   // client-side messages (e.g. session errors) don't exist on the server and
@@ -1192,7 +1224,13 @@ function MessageGroup({
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2 px-2 opacity-0 transition-opacity duration-150 group-hover/message-group:opacity-100 md:px-8">
           <MessageActions className="flex gap-0">
             <CopyMessageButton messages={renderableItems.map((item) => item.message)} />
-            <RoleplaySwipeActions controls={roleplaySwipe} />
+            <RoleplayAlternativeActions controls={roleplaySwipe} />
+            <RegenerateAction
+              swipe={roleplaySwipe}
+              assistantMessageId={lastRealItem?.message.id ?? null}
+              onRegenerate={onRegenerate}
+              disabled={isStreaming}
+            />
             {lastRealItem ? (
               <>
                 <MessageAction tooltip="Branch in new chat">

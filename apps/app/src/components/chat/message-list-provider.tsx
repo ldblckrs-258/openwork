@@ -37,6 +37,14 @@ interface MessageListContextValue {
   onRevertToUserMessage: (messageId: string) => void
   onForkAtMessage: (messageId: string) => void
   onEditUserMessage: (messageId: string, text: string) => void
+  /**
+   * Re-run the turn that produced this assistant message.
+   *
+   * Every session has this, not just roleplay: the roleplay swipe path records
+   * alternatives on top of it, but the underlying operation — revert to the
+   * user message, send it again — is the same one edit-and-resend performs.
+   */
+  onRegenerate: (assistantMessageId: string) => void
   onMcpReconnect: (
     action: ChatToolReconnectAction,
     onProgress: (progress: ChatToolReconnectProgress) => void,
@@ -65,6 +73,14 @@ interface MessageListProviderProps {
   onRevertToUserMessage: (messageId: string) => void
   onForkAtMessage: (messageId: string) => void
   onEditUserMessage: (messageId: string, text: string) => void
+  /**
+   * Re-run the turn that produced this assistant message.
+   *
+   * Every session has this, not just roleplay: the roleplay swipe path records
+   * alternatives on top of it, but the underlying operation — revert to the
+   * user message, send it again — is the same one edit-and-resend performs.
+   */
+  onRegenerate: (assistantMessageId: string) => void
   onMcpReconnect: (
     action: ChatToolReconnectAction,
     onProgress: (progress: ChatToolReconnectProgress) => void,
@@ -99,6 +115,7 @@ export function MessageListProvider({
   onRevertToUserMessage,
   onForkAtMessage,
   onEditUserMessage,
+  onRegenerate,
   onMcpReconnect,
   onMcpReopenAuthorization,
   onMcpRetry,
@@ -119,6 +136,7 @@ export function MessageListProvider({
       onRevertToUserMessage,
       onForkAtMessage,
       onEditUserMessage,
+      onRegenerate,
       onMcpReconnect,
       onMcpReopenAuthorization,
       onMcpRetry,
@@ -138,6 +156,7 @@ export function MessageListProvider({
       onRevertToUserMessage,
       onForkAtMessage,
       onEditUserMessage,
+      onRegenerate,
       onMcpReconnect,
       onMcpReopenAuthorization,
       onMcpRetry,

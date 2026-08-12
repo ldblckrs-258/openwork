@@ -123,7 +123,8 @@ import {
   readCloudInventoryScope,
 } from "@/react-app/domains/connections/cloud-inventory-cache";
 import { EMPTY_CONNECT_CAPABILITY_INVENTORY } from "@/react-app/domains/session/surface/connect-capability-inventory";
-import { consumeComposerAutoSend } from "./composer-auto-send";
+import { consumeComposerAutoSend, markComposerAutoSend } from "./composer-auto-send";
+import { findRegenerateSource } from "./regenerate-target";
 
 const EMPTY_TRANSCRIPT: UIMessage[] = [];
 const IDLE_STATUS: SessionStatus = { type: "idle" };
@@ -1979,6 +1980,26 @@ export function SessionSurface(props: SessionSurfaceProps) {
     void typeComposerText(text, messageId);
   }, [typeComposerText]);
 
+  /**
+   * Re-run the turn that produced a reply.
+   *
+   * Reuses edit-and-resend rather than adding a second destructive path: the
+   * user message's text goes back into the draft carrying its own id as the
+   * revert boundary, and the auto-send mark fires the ordinary send once the
+   * composer holds it. The send path then reverts and re-prompts inside one
+   * closure, rolling the revert back if the prompt fails.
+   *
+   * Going through the draft is what makes the closure see the new text —
+   * `handleSend` captures `draft`, so calling it here would send the previous
+   * one.
+   */
+  const handleRegenerate = useCallback((assistantMessageId: string) => {
+    const source = findRegenerateSource(renderedMessages, assistantMessageId);
+    if (!source) return;
+    markComposerAutoSend(props.sessionId);
+    void typeComposerText(source.text, source.userMessageId);
+  }, [props.sessionId, renderedMessages, typeComposerText]);
+
   const handleRestoreRevertedSession = useCallback(() => {
     if (!props.onRestoreRevertedSession || restoringRevertedMessages) return;
     setRestoringRevertedMessages(true);
@@ -2177,6 +2198,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                       onRevertToUserMessage={handleRevertToUserMessage}
                       onForkAtMessage={handleForkAtMessage}
                       onEditUserMessage={handleEditUserMessage}
+                      onRegenerate={handleRegenerate}
                       onMcpReconnect={handleMcpReconnect}
                       onMcpReopenAuthorization={handleMcpReopenAuthorization}
                       onMcpRetry={handleMcpRetry}
