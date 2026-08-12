@@ -1750,6 +1750,11 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
     ? `${local.prefs.defaultModel.providerID}/${local.prefs.defaultModel.modelID}`
     : t("settings.default_label");
   const defaultModelVariantLabel = local.prefs.modelVariant ?? t("settings.default_label");
+  const openDefaultModelPicker = useCallback(() => {
+    modelPicker.setQuery("");
+    modelPicker.setRecentProviderIds(new Set());
+    modelPicker.setOpen(true);
+  }, [modelPicker]);
   const providerStatusLabel = providerConnectedIds.length > 0 ? t("status.connected") : t("status.disconnected_label");
   const providerStatusStyle = providerConnectedIds.length > 0
     ? "bg-green-7/10 text-green-11 border-green-7/20"
@@ -2177,6 +2182,9 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
               provider.id.trim().toLowerCase() === "opencode" || provider.source !== "env"
             }
             canAddProviders={!providerAuthStore.isProviderAddRestricted()}
+            defaultModelLabel={defaultModelLabel}
+            defaultModelRef={defaultModelRef}
+            onOpenDefaultModelPicker={openDefaultModelPicker}
             organizationName={cloudSession.activeOrgName}
             cloudProviderIds={new Set([
               ...Object.values(providerAuthSnapshot.importedCloudProviders ?? {}).map((p) => p.providerId),

@@ -1258,6 +1258,8 @@ export default {
   "settings.loading": "Loading",
   "settings.deeplink_hint": "Accepts openwork:// or openwork-dev:// links.",
   "settings.default_label": "Default",
+  "settings.default_model_desc": "Used for new chats and for background generation such as summaries and character drafts.",
+  "settings.default_model_title": "Default model",
   "settings.desktop_notifications.all": "All",
   "settings.desktop_notifications.important": "Important",
   "settings.desktop_notifications.mode": "Notify me",

@@ -12,6 +12,7 @@ import {
   LayoutSectionDescription,
   LayoutSectionHeader,
   LayoutSectionItem,
+  LayoutSectionItemDescription,
   LayoutSectionItemFootnote,
   LayoutSectionItemHeader,
   LayoutSectionItemHeaderActions,
@@ -41,6 +42,11 @@ export type AiSettingsViewProps = {
   onDisconnectProvider: (providerId: string) => void | Promise<void>;
   canDisconnectProvider: (provider: ConnectedProvider) => boolean;
   canAddProviders: boolean;
+  /** Human-readable "Provider - Model" for the app-wide default, or a pick-a-model hint when unset. */
+  defaultModelLabel: string;
+  /** `providerID/modelID` for the app-wide default. */
+  defaultModelRef: string;
+  onOpenDefaultModelPicker: () => void;
   organizationName?: string;
   /** Set of local provider IDs that were imported from cloud. */
   cloudProviderIds?: Set<string>;
@@ -84,6 +90,32 @@ export function AiSettingsView(props: AiSettingsViewProps) {
 
   return (
     <LayoutStack>
+      {/* ---- Default model ---- */}
+      <LayoutSection>
+        <LayoutSectionHeader>
+          <LayoutSectionTitle>{t("settings.default_model_title")}</LayoutSectionTitle>
+          <LayoutSectionDescription>{t("settings.default_model_desc")}</LayoutSectionDescription>
+        </LayoutSectionHeader>
+
+        <LayoutSectionItem>
+          <LayoutSectionItemHeader>
+            <LayoutSectionItemTitle>{props.defaultModelLabel}</LayoutSectionItemTitle>
+            <LayoutSectionItemDescription>
+              <span className="font-mono">{props.defaultModelRef}</span>
+            </LayoutSectionItemDescription>
+            <LayoutSectionItemHeaderActions>
+              <Button
+                variant="outline"
+                onClick={() => props.onOpenDefaultModelPicker()}
+                disabled={props.busy || props.providerAuthBusy}
+              >
+                {t("settings.change")}
+              </Button>
+            </LayoutSectionItemHeaderActions>
+          </LayoutSectionItemHeader>
+        </LayoutSectionItem>
+      </LayoutSection>
+
       {/* ---- Providers ---- */}
       <LayoutSection>
         <LayoutSectionHeader>
