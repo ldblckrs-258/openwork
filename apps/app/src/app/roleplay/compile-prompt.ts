@@ -1,6 +1,7 @@
 import type { CharacterCardV2, RoleplayPersona } from "@openwork/types/roleplay";
 import { applyContextualInjectionBudget, type BudgetedInjection } from "./injection-budget.js";
 import { splitExampleMessages, substituteMacros, type MacroContext } from "./macros.js";
+import type { SkillInjection } from "./skills-injection.js";
 
 /**
  * Our composition order, exported as one constant so it can be changed without
@@ -26,6 +27,7 @@ import { splitExampleMessages, substituteMacros, type MacroContext } from "./mac
  */
 export const PROMPT_COMPOSITION_ORDER = [
   "system_prompt",
+  "skills",
   "lorebook_before",
   "description",
   "personality",
@@ -69,6 +71,14 @@ export type CompilePromptOptions = {
   lorebook?: BudgetedInjection[];
   /** Supplied by the character-memory phase. */
   memories?: BudgetedInjection[];
+  /**
+   * Attached skill bodies, already filtered and cut to their own budget.
+   *
+   * They do not enter `applyContextualInjectionBudget`: an explicitly chosen,
+   * fixed set has no business being ranked against a lorebook entry that grew
+   * with the scene.
+   */
+  skills?: SkillInjection[];
   budgetChars?: number;
 };
 
@@ -120,6 +130,19 @@ export function compilePrompt(
   const override = options.systemPromptOverride?.trim() ?? "";
   const sections: Record<PromptSection, string> = {
     system_prompt: expand(override || data.system_prompt, { ...macros, original: appDefault }) || appDefault,
+    // After the system prompt because a skill is an instruction about *how to
+    // write*, the same kind of thing the system prompt is — and before the
+    // character definition so the card stays the text closest to chat history.
+    // Expanded with the ordinary macro context, without `original`: a style
+    // skill saying "address them as {{user}}" works, and `{{original}}` stays
+    // literal exactly as it does in every other non-`system_prompt` section.
+    skills: block(
+      "# Writing Guidance",
+      (options.skills ?? [])
+        .map((skill) => block(`## ${expand(skill.name)}`, expand(skill.body)))
+        .filter(Boolean)
+        .join("\n\n"),
+    ),
     lorebook_before: block("# World Info", keptBefore.map((entry) => expand(entry)).join("\n\n").trim()),
     description: block(`# ${char}`, expand(data.description)),
     personality: block("## Personality", expand(data.personality)),

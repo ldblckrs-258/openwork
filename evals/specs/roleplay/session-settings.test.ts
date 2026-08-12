@@ -53,7 +53,7 @@ describe("resolving a conversation's settings", () => {
   test("an untouched setting resolves to the app's default rather than a stored copy", () => {
     // Stored defaults would freeze at the value they had the day the session
     // started, so a later change to the default would never reach it.
-    const resolved = resolveSessionSettings({ disabledLorebookIds: [], systemPrompt: "" });
+    const resolved = resolveSessionSettings({ disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" });
 
     expect(resolved.memoryBudgetChars).toBe(MEMORY_BUDGET_CHARS);
     expect(resolved.lorebookBudgetChars).toBe(LOREBOOK_BUDGET_CHARS);
@@ -66,11 +66,13 @@ describe("resolving a conversation's settings", () => {
     const high = resolveSessionSettings({
       memoryBudgetChars: MAX_SOURCE_BUDGET_CHARS + 50_000,
       disabledLorebookIds: [],
+      disabledSkillNames: [],
       systemPrompt: "",
     });
     const low = resolveSessionSettings({
       lorebookBudgetChars: -1,
       disabledLorebookIds: [],
+      disabledSkillNames: [],
       systemPrompt: "",
     });
 
@@ -81,7 +83,7 @@ describe("resolving a conversation's settings", () => {
   test("an over-long system prompt is cut rather than allowed to crowd the card", () => {
     const resolved = resolveSessionSettings({
       systemPrompt: "x".repeat(MAX_SESSION_SYSTEM_PROMPT_CHARS + 500),
-      disabledLorebookIds: [],
+      disabledLorebookIds: [], disabledSkillNames: [],
     });
 
     expect(resolved.systemPrompt.length).toBe(MAX_SESSION_SYSTEM_PROMPT_CHARS);
@@ -123,7 +125,7 @@ describe("what the settings change about a turn", () => {
       persona: PERSONA,
       lorebooks: books,
       scanMessages: [{ role: "user", text: "meet me at the harbour" }],
-      settings: { disabledLorebookIds: ["lore_1"], systemPrompt: "" },
+      settings: { disabledLorebookIds: ["lore_1"], disabledSkillNames: [], systemPrompt: "" },
       envContext: null,
     });
 
@@ -145,7 +147,7 @@ describe("what the settings change about a turn", () => {
       persona: PERSONA,
       lorebooks: books,
       scanMessages: messages,
-      settings: { disabledLorebookIds: [], systemPrompt: "" },
+      settings: { disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
       envContext: null,
     });
     const deep = buildRoleplayTurn({
@@ -153,7 +155,7 @@ describe("what the settings change about a turn", () => {
       persona: PERSONA,
       lorebooks: books,
       scanMessages: messages,
-      settings: { scanDepth: 20, disabledLorebookIds: [], systemPrompt: "" },
+      settings: { scanDepth: 20, disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
       envContext: null,
     });
 
@@ -175,7 +177,7 @@ describe("what the settings change about a turn", () => {
       memories,
       lorebooks: books,
       scanMessages: [{ role: "user", text: "meet me at the harbour" }],
-      settings: { memoryBudgetChars: 12_000, disabledLorebookIds: [], systemPrompt: "" },
+      settings: { memoryBudgetChars: 12_000, disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
       envContext: null,
     });
 
@@ -194,7 +196,7 @@ describe("what the settings change about a turn", () => {
       persona: PERSONA,
       lorebooks: books,
       scanMessages: [{ role: "user", text: "meet me at the harbour" }],
-      settings: { lorebookBudgetChars: 10, disabledLorebookIds: [], systemPrompt: "" },
+      settings: { lorebookBudgetChars: 10, disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
       envContext: null,
     });
 
@@ -212,19 +214,19 @@ describe("what the settings change about a turn", () => {
     const overridden = buildRoleplayTurn({
       card: carded,
       persona: PERSONA,
-      settings: { systemPrompt: "SESSION-INSTRUCTION", disabledLorebookIds: [] },
+      settings: { systemPrompt: "SESSION-INSTRUCTION", disabledLorebookIds: [], disabledSkillNames: [] },
       envContext: null,
     });
     const kept = buildRoleplayTurn({
       card: carded,
       persona: PERSONA,
-      settings: { systemPrompt: "", disabledLorebookIds: [] },
+      settings: { systemPrompt: "", disabledLorebookIds: [], disabledSkillNames: [] },
       envContext: null,
     });
     const withOriginal = buildRoleplayTurn({
       card: carded,
       persona: PERSONA,
-      settings: { systemPrompt: "{{original}} Also stay terse.", disabledLorebookIds: [] },
+      settings: { systemPrompt: "{{original}} Also stay terse.", disabledLorebookIds: [], disabledSkillNames: [] },
       envContext: null,
     });
 
@@ -244,7 +246,7 @@ describe("what the settings change about a turn", () => {
       persona: PERSONA,
       lorebooks: [book("lore_1", { entries: [entry("a", ["harbour"], "HARBOUR-FACT")] })],
       scanMessages: [{ role: "user" as const, text: "meet me at the harbour" }],
-      settings: { lorebookBudgetChars: 2_000, disabledLorebookIds: [], systemPrompt: "" },
+      settings: { lorebookBudgetChars: 2_000, disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
       envContext: null,
     };
 

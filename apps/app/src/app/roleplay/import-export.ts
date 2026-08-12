@@ -144,6 +144,10 @@ export function importedCharacterRecord(
     card,
     charSubstitutionName: charSubstitutionName || card.data.name,
     source: "imported",
+    // Never inherited from the file. A card is a stranger's text; letting it
+    // name a workspace skill would let it choose what guidance the character
+    // writes under, which is a decision that belongs to the person importing it.
+    attachedSkills: [],
     createdAt: now,
     updatedAt: now,
   };

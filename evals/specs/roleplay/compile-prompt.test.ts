@@ -43,6 +43,7 @@ describe("determinism", () => {
     // system string the turn originally ran against, or the character silently
     // changes between takes.
     const options: CompilePromptOptions = {
+      skills: [{ name: "Slow Burn", body: "Let scenes breathe." }],
       lorebook: [{ text: "The ledger is never lent out.", priority: 2 }],
       memories: [{ text: "Wren returned a book late in spring.", priority: 1 }],
     };
@@ -50,9 +51,25 @@ describe("determinism", () => {
   });
 });
 
+describe("macros inside a skill body", () => {
+  test("{{char}} and {{user}} expand, {{original}} stays literal", () => {
+    // Skill bodies run through the ordinary macro context, without `original` —
+    // the same contract every section that is not `system_prompt` has. A style
+    // skill saying "address them as {{user}}" therefore works.
+    const output = compile({}, {
+      skills: [{ name: "Address {{user}}", body: "{{char}} always calls {{user}} by name. Keep {{original}} intact." }],
+    });
+
+    expect(output).toContain("## Address Wren");
+    expect(output).toContain("Aria always calls Wren by name.");
+    expect(output).toContain("{{original}}");
+  });
+});
+
 describe("composition order", () => {
   test("sections appear in the exported order", () => {
     const output = compile({ system_prompt: "SYSTEM-MARKER" }, {
+      skills: [{ name: "SKILL-NAME-MARKER", body: "SKILL-BODY-MARKER" }],
       lorebookBefore: [{ text: "LOREBOOK-BEFORE-MARKER" }],
       lorebook: [{ text: "LOREBOOK-MARKER" }],
       memories: [{ text: "MEMORY-MARKER" }],
@@ -60,6 +77,7 @@ describe("composition order", () => {
 
     const positions = [
       output.indexOf("SYSTEM-MARKER"),
+      output.indexOf("SKILL-BODY-MARKER"),
       output.indexOf("LOREBOOK-BEFORE-MARKER"),
       output.indexOf("# Aria"),
       output.indexOf("## Personality"),
@@ -73,6 +91,25 @@ describe("composition order", () => {
     expect(positions).not.toContain(-1);
     expect([...positions].sort((left, right) => left - right)).toEqual(positions);
     expect(PROMPT_COMPOSITION_ORDER).toHaveLength(positions.length);
+  });
+
+  test("attached skills sit between the system prompt and the character definition", () => {
+    // A skill is an instruction about *how to write*, the same kind of thing the
+    // system prompt is, so it belongs beside it — and ahead of the card, which
+    // must stay the text closest to chat history.
+    const output = compile({ system_prompt: "SYSTEM-MARKER" }, {
+      skills: [{ name: "Slow Burn", body: "Let scenes breathe." }],
+    });
+
+    expect(output).toContain("# Writing Guidance");
+    expect(output).toContain("## Slow Burn");
+    expect(output.indexOf("SYSTEM-MARKER")).toBeLessThan(output.indexOf("# Writing Guidance"));
+    expect(output.indexOf("# Writing Guidance")).toBeLessThan(output.indexOf("# Aria"));
+  });
+
+  test("no attached skills contribute no Writing Guidance heading", () => {
+    expect(compile({}, { skills: [] })).not.toContain("# Writing Guidance");
+    expect(compile()).not.toContain("# Writing Guidance");
   });
 
   test("empty fields contribute no heading at all", () => {

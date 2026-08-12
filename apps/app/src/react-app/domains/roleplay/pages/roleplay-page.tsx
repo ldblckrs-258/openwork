@@ -32,6 +32,7 @@ import {
   useSaveRoleplayCharacter,
   useSaveRoleplayLorebook,
   useSaveRoleplayPersona,
+  useWorkspaceSkills,
 } from "../state/roleplay-queries";
 import { CharacterEditor } from "./character-editor";
 import { CharacterGenerate } from "./character-generate";
@@ -60,6 +61,7 @@ function randomSuffix(): string {
 export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: RoleplayPageProps) {
   const characters = useRoleplayCharacters(endpoint);
   const personas = useRoleplayPersonas(endpoint);
+  const workspaceSkills = useWorkspaceSkills(endpoint);
   const saveCharacter = useSaveRoleplayCharacter(endpoint);
   const deleteCharacter = useDeleteRoleplayCharacter(endpoint);
   const savePersona = useSaveRoleplayPersona(endpoint);
@@ -155,6 +157,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         character={editing}
         persona={personaRecord.persona}
         saving={saveCharacter.isPending}
+        skills={workspaceSkills.data ?? []}
         onCancel={() => setEditing(null)}
         onSave={(character) => persist(character, "Character saved")}
       />

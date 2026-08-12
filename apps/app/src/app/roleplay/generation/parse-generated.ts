@@ -137,6 +137,7 @@ export function generatedCharacterRecord(card: CharacterCardV2, id: string, now:
     card,
     charSubstitutionName: card.data.name,
     source: "authored",
+    attachedSkills: [],
     createdAt: now,
     updatedAt: now,
   };

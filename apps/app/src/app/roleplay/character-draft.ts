@@ -58,6 +58,7 @@ export function createBlankCharacter(id: string, now: number): RoleplayCharacter
     card: { spec: "chara_card_v2", spec_version: "2.0", data: emptyCardData() },
     charSubstitutionName: "",
     source: "authored",
+    attachedSkills: [],
     createdAt: now,
     updatedAt: now,
   };

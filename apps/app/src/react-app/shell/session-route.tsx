@@ -35,6 +35,7 @@ import { buildOpenworkEnvRuntimeKey } from "@/app/lib/openwork-env-runtime";
 import type {
   RoleplayBlock,
   RoleplaySessionSettings,
+  RoleplaySkillRef,
   RoleplayTurnRecord,
 } from "@openwork/types/roleplay";
 import { buildRoleplayTurn, type RoleplayTurn } from "@/app/roleplay/turn";
@@ -74,6 +75,7 @@ import {
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
   useApplyRoleplayRevision,
+  useAttachedSkillBodies,
   useBindRoleplaySession,
   useRoleplayLorebooks,
   useRoleplayMemories,
@@ -572,8 +574,20 @@ async function draftToParts(
 
 /** What the settings panel reports about a send, taken from the turn that was actually built. */
 function turnDiagnostics(turn: RoleplayTurn): RoleplayTurnDiagnostics {
-  return { lorebook: turn.lorebook, systemChars: turn.composed.chars, truncated: turn.composed.truncated };
+  return {
+    lorebook: turn.lorebook,
+    skills: turn.skills,
+    systemChars: turn.composed.chars,
+    truncated: turn.composed.truncated,
+  };
 }
+
+/**
+ * A character with no attached skills must not hand `useAttachedSkillBodies` a
+ * fresh array on every render, or the query list rebuilds and the surface memo
+ * never settles.
+ */
+const EMPTY_SKILL_REFS: RoleplaySkillRef[] = [];
 
 function singlePickedDirectory(selection: string | string[] | null) {
   return typeof selection === "string"
@@ -754,6 +768,8 @@ export function SessionRoute() {
     roleplayBindingQuery.data?.binding?.characterId ?? null,
   );
   const roleplayLorebooksQuery = useRoleplayLorebooks(selectedWorkspaceEndpoint);
+  const roleplaySkillRefs = roleplayBindingQuery.data?.character?.attachedSkills ?? EMPTY_SKILL_REFS;
+  const roleplaySkills = useAttachedSkillBodies(selectedWorkspaceEndpoint, roleplaySkillRefs);
   /**
    * The session whose opening line is still being written.
    *
@@ -788,6 +804,11 @@ export function SessionRoute() {
       memories: roleplayMemoriesQuery.data ?? [],
       greetingPending: greetingPendingSessionId === binding.sessionId,
       lorebooks: lorebooksForCharacter(roleplayLorebooksQuery.data ?? [], binding.characterId),
+      // Assembled here, not at the call sites: the send path and the regenerate
+      // path both read exclusively from this memo, and a skill set built twice
+      // is a skill set that can differ between a reply and its own regenerate.
+      skills: roleplaySkills.skills,
+      skillsPending: roleplaySkills.pending,
       settings: binding.settings,
       characterId: binding.characterId,
     };
@@ -797,6 +818,8 @@ export function SessionRoute() {
     roleplayLorebooksQuery.data,
     roleplayMemoriesQuery.data,
     roleplayPersonasQuery.data,
+    roleplaySkills.pending,
+    roleplaySkills.skills,
   ]);
   const roleplayTurnsQuery = useRoleplayTurns(selectedWorkspaceEndpoint, roleplaySurface ? selectedSessionId : null);
   const saveRoleplayTurn = useSaveRoleplayTurn(selectedWorkspaceEndpoint);
@@ -1662,6 +1685,7 @@ export function SessionRoute() {
                       storySoFar: roleplaySurface.storySoFar,
                       memories: roleplaySurface.memories,
                       lorebooks: roleplaySurface.lorebooks,
+                      skills: roleplaySurface.skills,
                       scanMessages,
                       settings: roleplaySurface.settings,
                       directorText: draft.directorText,
@@ -2272,7 +2296,7 @@ export function SessionRoute() {
       greeting: opening.kind === "alternate" ? opening.text : "",
       // Every field unset: a new conversation follows the app's defaults, and
       // storing them here would freeze them at today's values.
-      settings: { disabledLorebookIds: [], systemPrompt: "" },
+      settings: { disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
       boundAt: Date.now(),
     };
     await bindRoleplaySession.mutateAsync(binding);
@@ -2392,6 +2416,7 @@ export function SessionRoute() {
         storySoFar: roleplaySurface.storySoFar,
         memories: roleplaySurface.memories,
         lorebooks: roleplaySurface.lorebooks,
+        skills: roleplaySurface.skills,
         // The transcript as it stood before the revert, plus the message being
         // replayed: a regenerate has to match the same entries the original send
         // did, or the character loses world knowledge it just used.

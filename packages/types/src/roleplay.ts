@@ -141,6 +141,25 @@ export type RoleplayBlock = z.infer<typeof roleplayBlockSchema>
 export const roleplayCharacterSourceSchema = z.enum(["authored", "imported"])
 export type RoleplayCharacterSource = z.infer<typeof roleplayCharacterSourceSchema>
 
+export const roleplaySkillScopeSchema = z.enum(["project", "global"])
+export type RoleplaySkillScope = z.infer<typeof roleplaySkillScopeSchema>
+
+/**
+ * A workspace skill attached to a character as writing guidance.
+ *
+ * The scope is stored beside the name because a name alone is shadowable:
+ * `listSkills` pushes every ancestor's project directories ahead of the global
+ * ones and then dedupes first-wins, so a plugin install or a checked-out repo
+ * can silently take over a global name. A ref that resolves in a different
+ * scope than it was attached from is treated as unresolved rather than
+ * substituted.
+ */
+export const roleplaySkillRefSchema = z.object({
+  name: looseString,
+  scope: roleplaySkillScopeSchema.catch("project"),
+})
+export type RoleplaySkillRef = z.infer<typeof roleplaySkillRefSchema>
+
 export const roleplayCharacterRecordSchema = z.object({
   id: idString,
   card: characterCardV2Schema,
@@ -156,6 +175,14 @@ export const roleplayCharacterRecordSchema = z.object({
    * library, an export — should not imply otherwise.
    */
   revisedAt: z.number().int().nonnegative().optional().catch(undefined),
+  /**
+   * Workspace skills injected as writing guidance on every turn.
+   *
+   * Stored on the character rather than in the skill's own frontmatter: a skill
+   * is a `SKILL.md` file shared out of the workspace, and writing a roleplay
+   * concept into it would leak into every skill the user exports.
+   */
+  attachedSkills: z.array(roleplaySkillRefSchema).catch([]),
   createdAt: timestamp,
   updatedAt: timestamp,
   /**
@@ -202,6 +229,13 @@ export const roleplaySessionSettingsSchema = z.object({
    * default, which matches what attaching one means.
    */
   disabledLorebookIds: looseStringArray,
+  /**
+   * Attached skills switched off for this conversation only.
+   *
+   * The off-list, for the same reason `disabledLorebookIds` is one. Names are
+   * unique within a character's attached set, so this needs no scope.
+   */
+  disabledSkillNames: looseStringArray,
   /** Replaces the card's `system_prompt`, and the app default behind it. Empty means neither. */
   systemPrompt: looseString,
   /** False turns off speech/action/OOC colouring in this conversation's transcript. */
@@ -235,7 +269,7 @@ export const roleplaySessionBindingSchema = z.object({
    * whole object falls back rather than each field: a binding that failed to
    * parse would unbind a live conversation from its character.
    */
-  settings: roleplaySessionSettingsSchema.catch({ disabledLorebookIds: [], systemPrompt: "" }),
+  settings: roleplaySessionSettingsSchema.catch({ disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" }),
   boundAt: timestamp,
 })
 export type RoleplaySessionBinding = z.infer<typeof roleplaySessionBindingSchema>

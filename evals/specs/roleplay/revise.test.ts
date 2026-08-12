@@ -37,6 +37,7 @@ function character(overrides: Partial<RoleplayCharacterRecord> = {}): RoleplayCh
     card: CARD,
     charSubstitutionName: "Aria",
     source: "authored",
+    attachedSkills: [],
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

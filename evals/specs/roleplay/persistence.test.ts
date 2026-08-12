@@ -90,6 +90,7 @@ function characterRecord(id: string, name = "Aria", description?: string): Rolep
     card: card(name, description),
     charSubstitutionName: name,
     source: "authored",
+    attachedSkills: [],
     createdAt: 1_700_000_000,
     updatedAt: 1_700_000_000,
   };

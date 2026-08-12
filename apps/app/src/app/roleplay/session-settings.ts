@@ -3,6 +3,7 @@ import type { RoleplayLorebookRecord, RoleplaySessionSettings } from "@openwork/
 import { COMBINED_SYSTEM_BUDGET_CHARS } from "./compose-system.js";
 import { LOREBOOK_BUDGET_CHARS, MAX_SCAN_DEPTH } from "./lorebook.js";
 import { MEMORY_BUDGET_CHARS } from "./memory.js";
+import { SKILL_BUDGET_CHARS, type RoleplayAttachedSkill } from "./skills-injection.js";
 
 /**
  * A conversation's own configuration, resolved against the app's defaults.
@@ -36,6 +37,7 @@ export type ResolvedSessionSettings = {
   /** `undefined` leaves each book's own depth in force. */
   scanDepth: number | undefined;
   disabledLorebookIds: string[];
+  disabledSkillNames: string[];
   /** Empty means the card's `system_prompt`, then the app default, still decide. */
   systemPrompt: string;
   colorSegments: boolean;
@@ -56,6 +58,7 @@ export function resolveSessionSettings(settings: RoleplaySessionSettings | undef
         ? undefined
         : Math.min(MAX_SCAN_DEPTH, Math.max(1, Math.floor(scanDepth))),
     disabledLorebookIds: settings?.disabledLorebookIds ?? [],
+    disabledSkillNames: settings?.disabledSkillNames ?? [],
     systemPrompt: (settings?.systemPrompt ?? "").slice(0, MAX_SESSION_SYSTEM_PROMPT_CHARS),
     colorSegments: settings?.colorSegments !== false,
   };
@@ -71,13 +74,36 @@ export function activeLorebooks(
   return books.filter((book) => !disabled.has(book.id));
 }
 
+/** The attached skills this conversation actually injects, in attach order. */
+export function activeSkills(
+  skills: RoleplayAttachedSkill[],
+  disabledNames: string[],
+): RoleplayAttachedSkill[] {
+  if (disabledNames.length === 0) return skills;
+  const disabled = new Set(disabledNames);
+  return skills.filter((skill) => !disabled.has(skill.name));
+}
+
 /**
- * True when the two budgets together leave the character no usable room.
+ * Every character the three contextual sources may claim before the character
+ * itself is compiled.
+ *
+ * The skill budget is a fixed constant rather than a settings field — a third
+ * user-facing number is speculative before anyone has hit the ceiling — but it
+ * still counts here, or the total under-reports exactly when the user has
+ * over-allocated.
+ */
+export function totalSourceBudgetChars(settings: ResolvedSessionSettings): number {
+  return settings.memoryBudgetChars + settings.lorebookBudgetChars + SKILL_BUDGET_CHARS;
+}
+
+/**
+ * True when the three budgets together leave the character no usable room.
  *
  * Not an error — the send still goes out, and `composeSystem` truncates. It is
  * what the panel warns with, so a user who typed two large numbers learns it
  * from the panel rather than from the character going quiet.
  */
 export function budgetsCrowdOutCharacter(settings: ResolvedSessionSettings): boolean {
-  return settings.memoryBudgetChars + settings.lorebookBudgetChars > COMBINED_SYSTEM_BUDGET_CHARS / 2;
+  return totalSourceBudgetChars(settings) > COMBINED_SYSTEM_BUDGET_CHARS / 2;
 }

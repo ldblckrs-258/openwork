@@ -103,6 +103,63 @@ describe("the denial boundary on the send path", () => {
 
     expect(wire.agent).toBe(ROLEPLAY_AGENT);
   });
+
+  test("attaching skills injects text and grants nothing", () => {
+    // "Attach a skill" reads like "the character can now use skills". It cannot:
+    // this is context injection, and the `skill` tool stays denied. Adding
+    // `skill: true` to the tool map as an obvious completion has to fail a test
+    // rather than pass review.
+    const turn = buildRoleplayTurn({
+      card: card(),
+      persona,
+      skills: [{ name: "slow-burn", scope: "project", body: "Let scenes breathe." }],
+      envContext: ENV_CONTEXT,
+    });
+
+    expect(turn.prompt.system).toContain("Let scenes breathe.");
+    expect(turn.prompt.agent).toBe(ROLEPLAY_AGENT);
+    expect(toolMapGrantsAccess(turn.prompt.tools)).toBe(false);
+  });
+});
+
+describe("attached skills on a turn", () => {
+  test("a skill switched off for this conversation leaves the prompt but stays attached", () => {
+    const skills = [
+      { name: "slow-burn", scope: "project" as const, body: "Let scenes breathe." },
+      { name: "terse", scope: "project" as const, body: "Keep replies short." },
+    ];
+    const turn = buildRoleplayTurn({
+      card: card(),
+      persona,
+      skills,
+      settings: { disabledLorebookIds: [], disabledSkillNames: ["terse"], systemPrompt: "" },
+      envContext: null,
+    });
+
+    expect(turn.prompt.system).toContain("Let scenes breathe.");
+    expect(turn.prompt.system).not.toContain("Keep replies short.");
+    expect(skills).toHaveLength(2);
+  });
+
+  test("everything dropped, truncated, unresolved, or shadowed reaches the turn", () => {
+    // The selection is not an internal detail: it travels to
+    // `RoleplayTurnDiagnostics`, or the reporting requirement is satisfied into
+    // a value nothing reads.
+    const turn = buildRoleplayTurn({
+      card: card(),
+      persona,
+      skills: [
+        { name: "gone", scope: "project", body: "", status: "missing" },
+        { name: "narration", scope: "global", body: "", status: "shadowed" },
+        { name: "huge", scope: "project", body: "x".repeat(9_000) },
+      ],
+      envContext: null,
+    });
+
+    expect(turn.skills.unresolved).toEqual(["gone"]);
+    expect(turn.skills.shadowed).toEqual(["narration"]);
+    expect(turn.skills.truncated).toEqual(["huge"]);
+  });
 });
 
 describe("the greeting", () => {

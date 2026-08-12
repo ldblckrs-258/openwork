@@ -12,7 +12,8 @@ import { selectLorebookEntries, type LorebookScanMessage, type LorebookSelection
 import { substituteMacros } from "./macros.js";
 import { selectMemories } from "./memory.js";
 import { roleplayPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
-import { activeLorebooks, resolveSessionSettings } from "./session-settings.js";
+import { activeLorebooks, activeSkills, resolveSessionSettings } from "./session-settings.js";
+import { selectSkillInjections, type RoleplayAttachedSkill, type SkillSelection } from "./skills-injection.js";
 
 export type RoleplayTurnInput = {
   card: CharacterCardV2;
@@ -29,6 +30,14 @@ export type RoleplayTurnInput = {
   memories?: RoleplayMemoryRecord[];
   /** Lorebooks attached to this character. Only the entries this turn triggers reach the prompt. */
   lorebooks?: RoleplayLorebookRecord[];
+  /**
+   * Skills attached to this character, with bodies already read.
+   *
+   * Filtered against `disabledSkillNames` and budgeted here, so the send path
+   * and the regenerate path cannot assemble different sets from the same
+   * surface state.
+   */
+  skills?: RoleplayAttachedSkill[];
   /**
    * Recent transcript, oldest first, for lorebook key matching.
    *
@@ -53,6 +62,8 @@ export type RoleplayTurn = {
   composed: ComposedSystem;
   /** Which lorebook entries fired, and why every candidate did or did not. */
   lorebook: LorebookSelection;
+  /** Which attached skills reached the prompt, and what happened to the rest. */
+  skills: SkillSelection;
 };
 
 /**
@@ -90,12 +101,15 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
       ...(settings.scanDepth === undefined ? {} : { scanDepth: settings.scanDepth }),
     },
   );
+  // Its own ceiling, outside the shared eviction pass: see `skills-injection.ts`.
+  const skills = selectSkillInjections(activeSkills(input.skills ?? [], settings.disabledSkillNames));
   const characterPrompt = [
     compilePrompt(input.card, input.persona, {
       ...(input.charName ? { charName: input.charName } : {}),
       lorebookBefore: lorebook.before,
       lorebook: lorebook.after,
       memories,
+      skills: skills.injections,
       systemPromptOverride: settings.systemPrompt,
       // The two sources have already been cut to their own budgets, so the
       // shared pass exists only to keep the sum from being re-cut against a
@@ -116,5 +130,5 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
     directorText: input.directorText,
   });
 
-  return { prompt: roleplayPromptOptions(composed.system), composed, lorebook };
+  return { prompt: roleplayPromptOptions(composed.system), composed, lorebook, skills };
 }

@@ -35,6 +35,7 @@ function recordOf(card: RoleplayCharacterRecord["card"], overrides: Partial<Role
     card,
     charSubstitutionName: card.data.name,
     source: "imported",
+    attachedSkills: [],
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

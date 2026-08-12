@@ -6,6 +6,8 @@ import type {
   RoleplaySessionSettings,
 } from "@openwork/types/roleplay";
 
+import type { RoleplayAttachedSkill } from "./skills-injection.js";
+
 /**
  * What the chat surface needs to know to render a session as roleplay.
  *
@@ -43,6 +45,27 @@ export type RoleplaySurfaceState = {
    * them back; `buildRoleplayTurn` does the filtering.
    */
   lorebooks: RoleplayLorebookRecord[];
+  /**
+   * Every attached skill whose ref has been resolved, including ones this
+   * conversation has switched off and ones that resolved to nothing — the panel
+   * needs the first to offer them back and the second to report them.
+   * `buildRoleplayTurn` does the filtering, exactly as it does for lorebooks.
+   */
+  skills: RoleplayAttachedSkill[];
+  /**
+   * Set while an attached skill's body is still being read.
+   *
+   * Skills deliberately do *not* inherit the `?? []` empty-while-loading
+   * behaviour memories and lorebooks have. A missing fact costs a fact; missing
+   * style guidance costs the character's voice between turn 1 and turn 2, which
+   * the user would attribute to the model.
+   *
+   * Pending means *in flight*, and only that. A ref that failed, 404'd, or
+   * resolved to a shadowed scope is resolved-as-unresolved: it is reported and
+   * the composer opens. Treating a terminal outcome as pending would lock the
+   * conversation forever on a skill the user deleted.
+   */
+  skillsPending: boolean;
   /** This conversation's overrides, unresolved: `undefined` still means "app default". */
   settings: RoleplaySessionSettings;
   /** Which character the session is bound to, so a memory approved mid-chat knows where to go. */

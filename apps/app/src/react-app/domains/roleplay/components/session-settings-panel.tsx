@@ -13,8 +13,11 @@ import { COMBINED_SYSTEM_BUDGET_CHARS } from "@/app/roleplay/compose-system";
 import {
   MAX_SESSION_SYSTEM_PROMPT_CHARS,
   MAX_SOURCE_BUDGET_CHARS,
+  budgetsCrowdOutCharacter,
   resolveSessionSettings,
+  totalSourceBudgetChars,
 } from "@/app/roleplay/session-settings";
+import { SKILL_BUDGET_CHARS, type RoleplayAttachedSkill, type SkillSelection } from "@/app/roleplay/skills-injection";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +39,8 @@ import { StorySoFar } from "./story-so-far";
 /** What the last send actually did, so the panel reports rather than predicts. */
 export type RoleplayTurnDiagnostics = {
   lorebook: LorebookSelection;
+  /** Which attached skills reached the prompt, and what happened to the rest. */
+  skills: SkillSelection;
   systemChars: number;
   truncated: boolean;
 };
@@ -46,6 +51,8 @@ type SessionSettingsPanelProps = {
   personaId: string;
   onSelectPersona: (personaId: string) => void;
   lorebooks: RoleplayLorebookRecord[];
+  /** Every attached skill whose ref resolved, including ones switched off here. */
+  skills: RoleplayAttachedSkill[];
   settings: RoleplaySessionSettings;
   onChangeSettings: (settings: RoleplaySessionSettings) => void;
   saving: boolean;
@@ -173,6 +180,44 @@ function TraceRows({ lines, included }: { lines: LorebookTraceLine[]; included: 
 }
 
 /**
+ * What the last send did with the attached skills.
+ *
+ * Every non-empty outcome is listed. A skill that quietly failed to reach the
+ * prompt reads as the character losing its voice, and the user has no other
+ * place to find out why.
+ */
+function SkillRows({ selection }: { selection: SkillSelection }) {
+  // One row per attached name. `truncated` names are also in `injections` —
+  // they reached the prompt, just not whole — so the cut is a qualifier on that
+  // row rather than a second row contradicting it.
+  const cut = new Set(selection.truncated);
+  const rows: { name: string; reason: string }[] = [
+    ...selection.injections.map((entry) => ({
+      name: entry.name,
+      reason: cut.has(entry.name) ? "in the prompt, cut to fit" : "in the prompt",
+    })),
+    ...selection.dropped.map((name) => ({ name, reason: "over the guidance budget" })),
+    ...selection.unresolved.map((name) => ({ name, reason: "no such skill" })),
+    ...selection.shadowed.map((name) => ({ name, reason: "another skill has taken this name" })),
+  ];
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-muted-foreground text-xs font-medium">Writing guidance ({selection.charsUsed} characters)</p>
+      <ul className="flex flex-col gap-1">
+        {rows.map((row) => (
+          <li key={`${row.reason}:${row.name}`} className="flex items-baseline justify-between gap-2 text-xs">
+            <span className="min-w-0 flex-1 truncate">{row.name}</span>
+            <span className="text-muted-foreground shrink-0">{row.reason}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
  * Per-conversation roleplay configuration.
  *
  * Everything here applies to the next send *and* to a regenerate of the reply
@@ -187,12 +232,14 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
   };
 
   const disabled = new Set(resolved.disabledLorebookIds);
+  const disabledSkills = new Set(resolved.disabledSkillNames);
   const [promptDraft, setPromptDraft] = React.useState(resolved.systemPrompt);
   React.useEffect(() => {
     setPromptDraft(resolved.systemPrompt);
   }, [resolved.systemPrompt]);
 
-  const budgetTotal = resolved.memoryBudgetChars + resolved.lorebookBudgetChars;
+  const budgetTotal = totalSourceBudgetChars(resolved);
+  const crowdsOut = budgetsCrowdOutCharacter(resolved);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
@@ -279,6 +326,40 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
       <Separator />
 
       <Section
+        title="Writing guidance"
+        hint={
+          props.skills.length === 0
+            ? "No skill is attached to this character."
+            : "Attached skills are injected as writing guidance. Switching one off here leaves it attached to the character."
+        }
+      >
+        {props.skills.map((skill) => (
+          <div key={skill.name} className="flex items-center justify-between gap-3">
+            <Label htmlFor={`skill-${skill.name}`} className="min-w-0 flex-1 truncate text-sm font-normal">
+              {skill.name}
+              <span className="text-muted-foreground ms-1">{skill.scope}</span>
+            </Label>
+            <Switch
+              id={`skill-${skill.name}`}
+              // A ref that resolved to nothing cannot be switched on, and saying
+              // so beats a toggle that does nothing.
+              disabled={Boolean(skill.status)}
+              checked={!skill.status && !disabledSkills.has(skill.name)}
+              onCheckedChange={(checked) =>
+                patch({
+                  disabledSkillNames: checked
+                    ? resolved.disabledSkillNames.filter((name) => name !== skill.name)
+                    : [...resolved.disabledSkillNames, skill.name],
+                })
+              }
+            />
+          </div>
+        ))}
+      </Section>
+
+      <Separator />
+
+      <Section
         title="Prompt budget"
         hint="Characters each source may occupy. Leave blank for the default. The two no longer compete: each is cut to its own number."
       >
@@ -296,9 +377,20 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
           fallback={LOREBOOK_BUDGET_CHARS}
           onCommit={(value) => patch({ lorebookBudgetChars: value })}
         />
+        {/* Writing guidance has no field of its own — a third number is
+            speculative before anyone has hit the ceiling — but it still counts
+            here, or the total under-reports exactly when the user has
+            over-allocated. */}
         <p className="text-muted-foreground text-xs tabular-nums">
-          {budgetTotal} of {COMBINED_SYSTEM_BUDGET_CHARS} characters claimed before the character itself.
+          {budgetTotal} of {COMBINED_SYSTEM_BUDGET_CHARS} characters claimed before the character itself, including{" "}
+          {SKILL_BUDGET_CHARS} for writing guidance.
         </p>
+        {crowdsOut ? (
+          <p className="text-amber-11 text-xs">
+            These budgets claim more than half the system prompt. The character's own description is what gets cut
+            first.
+          </p>
+        ) : null}
       </Section>
 
       <Separator />
@@ -351,6 +443,7 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
                 its own description.
               </p>
             ) : null}
+            <SkillRows selection={props.diagnostics.skills} />
             <TraceRows lines={props.diagnostics.lorebook.trace} included />
             <TraceRows lines={props.diagnostics.lorebook.trace} included={false} />
           </Section>
@@ -364,7 +457,7 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
           size="sm"
           disabled={props.saving}
           onClick={() =>
-            props.onChangeSettings({ disabledLorebookIds: [], systemPrompt: "" })
+            props.onChangeSettings({ disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" })
           }
         >
           Reset to defaults

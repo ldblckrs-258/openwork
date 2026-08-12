@@ -12,7 +12,10 @@ import {
   validateCharacter,
   type CharacterFieldError,
 } from "@/app/roleplay/character-draft";
+import { MAX_ATTACHED_SKILLS } from "@/app/roleplay/skills-injection";
+import type { OpenworkSkillItem } from "@/app/lib/openwork-server";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -25,6 +28,8 @@ type CharacterEditorProps = {
   character: RoleplayCharacterRecord;
   persona: RoleplayPersona;
   saving: boolean;
+  /** Project and global skills, as `listSkills` resolved them. */
+  skills: OpenworkSkillItem[];
   onSave: (character: RoleplayCharacterRecord) => void;
   onCancel: () => void;
 };
@@ -42,6 +47,7 @@ export function CharacterEditor({
   character,
   persona,
   saving,
+  skills,
   onSave,
   onCancel,
 }: CharacterEditorProps) {
@@ -53,6 +59,29 @@ export function CharacterEditor({
   const edit = (change: Partial<CharacterCardDataV2>) =>
     setDraft((current) => applyCardEdit(current, change, Date.now()));
   const data = draft.card.data;
+
+  const attached = draft.attachedSkills;
+  /**
+   * A ref is attached by name *and* scope, so an attached global skill that a
+   * project one later shadows shows as attached and reports as unresolved on the
+   * next turn — rather than silently swapping which file the character writes
+   * under.
+   */
+  const isAttached = (skill: OpenworkSkillItem) =>
+    attached.some((ref) => ref.name === skill.name && ref.scope === skill.scope);
+  const attachedElsewhere = attached.filter(
+    (ref) => !skills.some((skill) => skill.name === ref.name && skill.scope === ref.scope),
+  );
+  const toggleSkill = (skill: OpenworkSkillItem) =>
+    setDraft((current) => ({
+      ...current,
+      attachedSkills: current.attachedSkills.some(
+        (ref) => ref.name === skill.name && ref.scope === skill.scope,
+      )
+        ? current.attachedSkills.filter((ref) => !(ref.name === skill.name && ref.scope === skill.scope))
+        : [...current.attachedSkills, { name: skill.name, scope: skill.scope }],
+      updatedAt: Date.now(),
+    }));
 
   const submit = () => {
     const found = validateCharacter(draft);
@@ -220,6 +249,81 @@ export function CharacterEditor({
           history, so these instructions can never take effect. The text is
           preserved on export.
         </p>
+      </section>
+
+      <Separator />
+
+      <section className="flex flex-col gap-3">
+        <div>
+          <h3 className="text-sm font-medium">Writing guidance</h3>
+          <p className="text-muted-foreground text-sm">
+            Workspace skills injected into every turn as guidance on how to write — narration style, pacing, content
+            rules. Text only: the character cannot run a skill. Up to {MAX_ATTACHED_SKILLS}.
+          </p>
+        </div>
+        {skills.length === 0 ? (
+          <p className="text-muted-foreground text-sm">No skills in this workspace.</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {skills.map((skill) => (
+              <li key={`${skill.scope}:${skill.name}`}>
+                <label className="flex items-start gap-2 text-sm">
+                  <Checkbox
+                    className="mt-0.5"
+                    checked={isAttached(skill)}
+                    disabled={!isAttached(skill) && attached.length >= MAX_ATTACHED_SKILLS}
+                    onCheckedChange={() => toggleSkill(skill)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    {skill.name}
+                    <span className="text-muted-foreground ms-1">{skill.scope}</span>
+                    {skill.description ? (
+                      <span className="text-muted-foreground block text-xs">{skill.description}</span>
+                    ) : null}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+        {/* An attached ref with nothing behind it is shown here rather than
+            dropped from the list, or the only way to detach a deleted or
+            shadowed skill would be to know it was still there. */}
+        {attachedElsewhere.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            <p className="text-amber-11 text-xs">
+              Attached but not resolvable here. These are skipped on every turn and reported in the conversation's
+              settings panel.
+            </p>
+            <ul className="flex flex-col gap-1">
+              {attachedElsewhere.map((ref) => (
+                <li key={`${ref.scope}:${ref.name}`} className="flex items-center justify-between gap-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate">
+                    {ref.name}
+                    <span className="text-muted-foreground ms-1">{ref.scope}</span>
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Detach ${ref.name}`}
+                    onClick={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        attachedSkills: current.attachedSkills.filter(
+                          (entry) => !(entry.name === ref.name && entry.scope === ref.scope),
+                        ),
+                        updatedAt: Date.now(),
+                      }))
+                    }
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </section>
 
       <Separator />

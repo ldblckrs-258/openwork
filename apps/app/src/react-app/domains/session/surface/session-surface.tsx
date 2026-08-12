@@ -2184,7 +2184,13 @@ export function SessionSurface(props: SessionSurfaceProps) {
                         props.roleplayControls
                           ? {
                               turn: props.roleplayControls.turn,
-                              busy: props.roleplayControls.busy || chatStreaming,
+                              // Gated on `skillsPending` too, or a regenerate
+                              // could compile against a different skill set than
+                              // the send it replaces.
+                              busy:
+                                props.roleplayControls.busy ||
+                                chatStreaming ||
+                                Boolean(props.roleplay?.skillsPending),
                               onSwipe: props.roleplayControls.onSwipe,
                               onSelectAlternative: props.roleplayControls.onSelectAlternative,
                             }
@@ -2259,6 +2265,18 @@ export function SessionSurface(props: SessionSurfaceProps) {
             </span>
           </div>
         ) : null}
+        {/* Not the `?? []` empty-while-loading treatment memories and lorebooks
+            get. A missing fact costs a fact; missing style guidance costs the
+            character's voice between turn 1 and turn 2, which the user would
+            attribute to the model. Pending means in flight only — a failed,
+            missing, or shadowed ref resolves and this clears, or one stale
+            attachment would lock the conversation permanently. */}
+        {props.roleplay && !props.roleplay.greetingPending && props.roleplay.skillsPending ? (
+          <div className="text-muted-foreground flex items-center gap-2 px-4 pb-2 text-sm">
+            <LoaderCircle className="size-4 animate-spin" />
+            <span>Loading writing guidance. The first reply waits so it reads the same as the second.</span>
+          </div>
+        ) : null}
         {/* Regenerate and alternative navigation are not here: they act on a
             reply, so they live in that message group's own action bar alongside
             copy, branch, and revert. Everything session-level moved to the
@@ -2284,7 +2302,8 @@ export function SessionSurface(props: SessionSurfaceProps) {
         disabled={
           model.transitionState !== "idle" ||
           Boolean(props.modelUnavailable) ||
-          Boolean(props.roleplay?.greetingPending)
+          Boolean(props.roleplay?.greetingPending) ||
+          Boolean(props.roleplay?.skillsPending)
         }
         roleplayBlocks={Boolean(props.roleplay)}
         roleplayCharacterName={props.roleplay?.characterName || undefined}
@@ -2406,6 +2425,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
             personaId={props.roleplayControls.personaId}
             onSelectPersona={props.roleplayControls.onSelectPersona}
             lorebooks={props.roleplay.lorebooks}
+            skills={props.roleplay.skills}
             settings={props.roleplay.settings}
             onChangeSettings={props.roleplayControls.onChangeSettings}
             saving={props.roleplayControls.storySaving}

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type {
   RoleplayCardRevision,
   RoleplayCharacterRecord,
@@ -6,9 +6,11 @@ import type {
   RoleplayMemoryRecord,
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
+  RoleplaySkillRef,
   RoleplayTurnRecord,
 } from "@openwork/types/roleplay";
 
+import { classifyResolvedSkill, type RoleplayAttachedSkill } from "@/app/roleplay/skills-injection";
 import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
 
 const ROLEPLAY_QUERY_ROOT = ["roleplay"] as const;
@@ -263,6 +265,69 @@ export function useDeleteRoleplayLorebook(endpoint: ResolvedWorkspaceEndpoint | 
     onSuccess: async () => {
       if (endpoint) await queryClient.invalidateQueries({ queryKey: roleplayLorebooksQueryKey(endpoint.workspaceId) });
     },
+  });
+}
+
+export function workspaceSkillsQueryKey(workspaceId: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "skills", workspaceId] as const;
+}
+
+export function workspaceSkillBodyQueryKey(workspaceId: string, name: string) {
+  return [...ROLEPLAY_QUERY_ROOT, "skill-body", workspaceId, name] as const;
+}
+
+/**
+ * The skills a character can be given as writing guidance.
+ *
+ * `includeGlobal` is always on: the route resolves a name by running the same
+ * directory walk and then `.find`, so omitting it would make every
+ * globally-scoped skill invisible here and 404 on resolution.
+ */
+export function useWorkspaceSkills(endpoint: ResolvedWorkspaceEndpoint | null) {
+  return useQuery({
+    queryKey: workspaceSkillsQueryKey(endpoint?.workspaceId ?? ""),
+    enabled: Boolean(endpoint),
+    staleTime: 30_000,
+    queryFn: async () => {
+      if (!endpoint) return [];
+      return (await endpoint.client.listSkills(endpoint.workspaceId, { includeGlobal: true })).items;
+    },
+  });
+}
+
+/**
+ * Read the body of every attached skill, one cached query per name.
+ *
+ * The route runs a full `listSkills` walk per name, so this is deliberately
+ * per-name and cached rather than batched: an attached set is small, and a
+ * batch route is a server API to maintain for a cost nobody has measured.
+ *
+ * A ref that 404s, fails, or resolves in a different scope than it was attached
+ * from comes back with a `status` rather than throwing. Those are terminal
+ * outcomes, so `pending` clears — a failed fetch that counted as pending would
+ * lock the conversation on a skill the user deleted.
+ */
+export function useAttachedSkillBodies(endpoint: ResolvedWorkspaceEndpoint | null, refs: RoleplaySkillRef[]) {
+  return useQueries({
+    queries: refs.map((ref) => ({
+      queryKey: workspaceSkillBodyQueryKey(endpoint?.workspaceId ?? "", ref.name),
+      enabled: Boolean(endpoint),
+      staleTime: 30_000,
+      retry: false,
+      queryFn: async (): Promise<RoleplayAttachedSkill> => {
+        if (!endpoint) return classifyResolvedSkill(ref, null);
+        try {
+          const resolved = await endpoint.client.getSkill(endpoint.workspaceId, ref.name, { includeGlobal: true });
+          return classifyResolvedSkill(ref, { scope: resolved.item.scope, content: resolved.content });
+        } catch {
+          return classifyResolvedSkill(ref, null);
+        }
+      },
+    })),
+    combine: (results) => ({
+      skills: results.flatMap((result) => (result.data ? [result.data] : [])),
+      pending: results.some((result) => result.isPending),
+    }),
   });
 }
 
