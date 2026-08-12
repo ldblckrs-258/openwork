@@ -12,8 +12,10 @@ import {
   validateCharacter,
   type CharacterFieldError,
 } from "@/app/roleplay/character-draft";
-import { MAX_ATTACHED_SKILLS } from "@/app/roleplay/skills-injection";
+import { MAX_ATTACHED_SKILLS, SKILL_BUDGET_CHARS, selectSkillInjections } from "@/app/roleplay/skills-injection";
 import type { OpenworkSkillItem } from "@/app/lib/openwork-server";
+import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
+import { useAttachedSkillBodies } from "../state/roleplay-queries";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -30,6 +32,8 @@ type CharacterEditorProps = {
   saving: boolean;
   /** Project and global skills, as `listSkills` resolved them. */
   skills: OpenworkSkillItem[];
+  /** Reads the bodies of the attached skills, so the editor can size them. */
+  endpoint: ResolvedWorkspaceEndpoint | null;
   onSave: (character: RoleplayCharacterRecord) => void;
   onCancel: () => void;
 };
@@ -48,6 +52,7 @@ export function CharacterEditor({
   persona,
   saving,
   skills,
+  endpoint,
   onSave,
   onCancel,
 }: CharacterEditorProps) {
@@ -61,6 +66,20 @@ export function CharacterEditor({
   const data = draft.card.data;
 
   const attached = draft.attachedSkills;
+  /**
+   * What the next turn would actually inject, run through the same function the
+   * turn runs. The budget fills in attach order and cuts whatever straddles the
+   * boundary, so a large skill attached first can leave a later one nothing —
+   * shown here rather than discovered after a send, in the diagnostics panel.
+   */
+  const attachedBodies = useAttachedSkillBodies(endpoint, attached);
+  const selection = React.useMemo(
+    () => selectSkillInjections(attachedBodies.skills),
+    [attachedBodies.skills],
+  );
+  const injectedChars = new Map(selection.injections.map((entry) => [entry.name, entry.body.length]));
+  const cutNames = new Set(selection.truncated);
+  const droppedNames = new Set(selection.dropped);
   /**
    * A ref is attached by name *and* scope, so an attached global skill that a
    * project one later shadows shows as attached and reports as unresolved on the
@@ -277,6 +296,18 @@ export function CharacterEditor({
                   <span className="min-w-0 flex-1">
                     {skill.name}
                     <span className="text-muted-foreground ms-1">{skill.scope}</span>
+                    {isAttached(skill) && !attachedBodies.pending ? (
+                      droppedNames.has(skill.name) ? (
+                        <span className="text-amber-11 ms-1 text-xs tabular-nums">
+                          no room left — nothing of this reaches the prompt
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground ms-1 text-xs tabular-nums">
+                          {(injectedChars.get(skill.name) ?? 0).toLocaleString()} chars
+                          {cutNames.has(skill.name) ? " · cut to fit" : ""}
+                        </span>
+                      )
+                    ) : null}
                     {skill.description ? (
                       <span className="text-muted-foreground block text-xs">{skill.description}</span>
                     ) : null}
@@ -286,6 +317,20 @@ export function CharacterEditor({
             ))}
           </ul>
         )}
+        {attached.length > 0 && !attachedBodies.pending ? (
+          <p
+            className={
+              selection.dropped.length > 0 || selection.truncated.length > 0
+                ? "text-amber-11 text-xs tabular-nums"
+                : "text-muted-foreground text-xs tabular-nums"
+            }
+          >
+            {selection.charsUsed.toLocaleString()} of {SKILL_BUDGET_CHARS.toLocaleString()} characters used.
+            {selection.dropped.length > 0
+              ? " The budget fills in the order below, so a long skill above a short one can leave it nothing."
+              : ""}
+          </p>
+        ) : null}
         {/* An attached ref with nothing behind it is shown here rather than
             dropped from the list, or the only way to detach a deleted or
             shadowed skill would be to know it was still there. */}
@@ -328,7 +373,7 @@ export function CharacterEditor({
 
       <Separator />
 
-      <CompiledPromptDebug character={draft} persona={persona} />
+      <CompiledPromptDebug character={draft} persona={persona} skills={selection.injections} />
 
       <div className="flex items-center justify-between gap-2">
         {/* Exports the draft on screen, not the stored record: what the user is

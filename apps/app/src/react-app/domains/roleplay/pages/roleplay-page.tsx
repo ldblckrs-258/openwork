@@ -158,6 +158,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         persona={personaRecord.persona}
         saving={saveCharacter.isPending}
         skills={workspaceSkills.data ?? []}
+        endpoint={endpoint}
         onCancel={() => setEditing(null)}
         onSave={(character) => persist(character, "Character saved")}
       />

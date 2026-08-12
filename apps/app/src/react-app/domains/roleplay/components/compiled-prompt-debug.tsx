@@ -7,10 +7,19 @@ import type { RoleplayCharacterRecord } from "@openwork/types/roleplay";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 import { compilePrompt } from "@/app/roleplay/compile-prompt";
+import type { SkillInjection } from "@/app/roleplay/skills-injection";
 
 type CompiledPromptDebugProps = {
   character: RoleplayCharacterRecord;
   persona: RoleplayPersona;
+  /**
+   * The attached skill bodies that survived the budget, already selected.
+   *
+   * Passed in rather than resolved here so this stays a view of the compiler:
+   * the same selection the turn will make, not a second one that could disagree
+   * with it.
+   */
+  skills?: SkillInjection[];
 };
 
 /**
@@ -21,10 +30,14 @@ type CompiledPromptDebugProps = {
  * a card authored against another app may land differently here. Without this
  * view the only way to debug that is guesswork about text the user never sees.
  */
-export function CompiledPromptDebug({ character, persona }: CompiledPromptDebugProps) {
+export function CompiledPromptDebug({ character, persona, skills }: CompiledPromptDebugProps) {
   const compiled = React.useMemo(
-    () => compilePrompt(character.card, persona, { charName: character.charSubstitutionName || undefined }),
-    [character, persona],
+    () =>
+      compilePrompt(character.card, persona, {
+        charName: character.charSubstitutionName || undefined,
+        skills: skills ?? [],
+      }),
+    [character, persona, skills],
   );
 
   return (
