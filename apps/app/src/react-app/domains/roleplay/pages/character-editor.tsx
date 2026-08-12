@@ -81,6 +81,16 @@ export function CharacterEditor({
   const cutNames = new Set(selection.truncated);
   const droppedNames = new Set(selection.dropped);
   /**
+   * Refs the body read could not resolve, checked before any size is shown.
+   *
+   * The list below comes from `useWorkspaceSkills`, cached separately from the
+   * body reads, so it can still be serving a name whose file has since been
+   * deleted. Without this the row falls through to `?? 0` and reads "0 chars" —
+   * a plausible number for a skill that does not exist, on the one row that
+   * exists to say what actually reaches the prompt.
+   */
+  const unresolvedNames = new Set([...selection.unresolved, ...selection.shadowed]);
+  /**
    * A ref is attached by name *and* scope, so an attached global skill that a
    * project one later shadows shows as attached and reports as unresolved on the
    * next turn — rather than silently swapping which file the character writes
@@ -297,7 +307,11 @@ export function CharacterEditor({
                     {skill.name}
                     <span className="text-muted-foreground ms-1">{skill.scope}</span>
                     {isAttached(skill) && !attachedBodies.pending ? (
-                      droppedNames.has(skill.name) ? (
+                      unresolvedNames.has(skill.name) ? (
+                        <span className="text-amber-11 ms-1 text-xs">
+                          no such skill — nothing of this reaches the prompt
+                        </span>
+                      ) : droppedNames.has(skill.name) ? (
                         <span className="text-amber-11 ms-1 text-xs tabular-nums">
                           no room left — nothing of this reaches the prompt
                         </span>
