@@ -2,6 +2,7 @@
 import * as React from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   ArrowLeft,
@@ -848,6 +849,7 @@ export type AppSidebarProps = {
   onForgetWorkspace: (workspaceId: string) => void;
   onOpenCreateWorkspace: () => void;
   automationsActive?: boolean;
+  automationsNeedAttention?: boolean;
   onOpenAutomations?: () => void;
   roleplayActive?: boolean;
   onOpenRoleplay?: () => void;
@@ -1149,6 +1151,18 @@ export function AppSidebar(props: AppSidebarProps) {
                 active={props.automationsActive === true}
                 icon={Clock3}
                 label="Automations"
+                labelContent={(
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="truncate">Automations</span>
+                    {props.automationsNeedAttention ? (
+                      <AlertTriangle
+                        data-automations-attention-indicator
+                        className="ml-auto size-3.5 shrink-0 text-warning"
+                        aria-label="An Automation needs attention"
+                      />
+                    ) : null}
+                  </span>
+                )}
                 onSelect={props.onOpenAutomations}
               />
             ) : null}

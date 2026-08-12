@@ -39,6 +39,11 @@
       "development": "./src/roleplay.ts",
       "default": "./src/roleplay.ts"
     },
+    "./dynamic-artifacts": {
+      "types": "./src/dynamic-artifacts.ts",
+      "development": "./src/dynamic-artifacts.ts",
+      "default": "./src/dynamic-artifacts.ts"
+    },
     "./den/desktop-app-restrictions": {
       "types": "./src/den/desktop-app-restrictions.ts",
       "development": "./src/den/desktop-app-restrictions.ts",

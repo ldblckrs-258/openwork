@@ -8,6 +8,7 @@ import { resolveExtensionIconSrc } from "@/react-app/design-system/extension-ico
 import { t } from "../../../../i18n";
 import { OPENWORK_EXTENSION_CATALOG } from "../../../../app/constants";
 import { buildDenAuthUrl, readDenBootstrapConfig } from "../../../../app/lib/den";
+import { markDesktopSignInInitiated } from "../../../../app/lib/den-sign-in-intent";
 import { type OpenworkServerClient, type OpenworkServerStatus } from "../../../../app/lib/openwork-server";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import type { BootPhase } from "../../../../app/lib/startup-boot";
@@ -147,6 +148,7 @@ export type SessionPageSidebarProps = {
   onForgetWorkspace: (workspaceId: string) => void;
   onOpenCreateWorkspace: () => void;
   automationsActive?: boolean;
+  automationsNeedAttention?: boolean;
   onOpenAutomations?: () => void;
   roleplayActive?: boolean;
   onOpenRoleplay?: () => void;
@@ -351,6 +353,7 @@ export function SessionPage(props: SessionPageProps) {
   const showCloudSignIn = shellConfig.cloudSignin && !denAuth.isSignedIn && denAuth.status !== "checking";
   const openCloudSignIn = useCallback(() => {
     const baseUrl = readDenBootstrapConfig().baseUrl;
+    markDesktopSignInInitiated();
     // Label stays "Sign in"; opens the sign-up tab so new users aren't defaulted into sign-in.
     platform.openLink(buildDenAuthUrl(baseUrl, "sign-up"));
   }, [platform]);
@@ -1055,6 +1058,7 @@ export function SessionPage(props: SessionPageProps) {
           onOpenCreateWorkspace={props.sidebar.onOpenCreateWorkspace}
           onOpenSessionSearch={props.sidebar.onOpenSessionSearch}
           automationsActive={props.sidebar.automationsActive}
+          automationsNeedAttention={props.sidebar.automationsNeedAttention}
           onOpenAutomations={props.sidebar.onOpenAutomations}
           roleplayActive={props.sidebar.roleplayActive}
           onOpenRoleplay={props.sidebar.onOpenRoleplay}
@@ -1188,12 +1192,10 @@ export function SessionPage(props: SessionPageProps) {
                 />
                 <TooltipContent>{sidePanelOpen ? "Close side panel" : "Open side panel"}</TooltipContent>
               </Tooltip>
-              {shellConfig.cloudSignin ? (
+              {showCloudSignIn ? (
                 <Button
                   variant="secondary"
                   size="sm"
-                  className={showCloudSignIn ? undefined : "invisible"}
-                  disabled={!showCloudSignIn}
                   onClick={openCloudSignIn}
                   title={t("den.signin_title")}
                   aria-label={t("den.signin_title")}

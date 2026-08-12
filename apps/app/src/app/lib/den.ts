@@ -2,6 +2,10 @@ import {
   normalizeDesktopConfig,
   type DesktopConfig as SharedDesktopConfig,
 } from "@openwork/types/den/desktop-policies";
+import {
+  AUTOMATION_MODEL_ATTENTION_CAPABILITY,
+  AUTOMATION_MODEL_ATTENTION_CAPABILITY_HEADER,
+} from "@openwork/types/automations";
 import type {
   AutomationDetail,
   AutomationDesktopRunnerRegistration,
@@ -22,6 +26,7 @@ export { normalizeDesktopConfig };
 
 import { isDesktopDeployment, isWebDeployment } from "./openwork-deployment";
 import {
+  dispatchDenSessionUpdated,
   dispatchDenSettingsChanged,
 } from "./den-session-events";
 import {
@@ -33,6 +38,7 @@ import {
   type DesktopBootstrapConfig as ShellDesktopBootstrapConfig,
 } from "./desktop";
 import { getOpenworkGatewayOrigin } from "./gateway-runtime";
+import { clearDesktopSignInIntent, clearOrgSelectionPending } from "./den-sign-in-intent";
 import { isDesktopRuntime } from "./runtime-env";
 import type { ReloadReason } from "../types";
 import type {
@@ -437,14 +443,36 @@ export class DenApiError extends Error {
 }
 
 /**
- * True only for 401s that actually came from the Den API (its JSON error
- * envelope parsed into a code). A bare/foreign 401 from a corporate proxy,
- * captive portal, or LB while the control plane is unreachable must be
- * treated as "unavailable", not as a revoked session — otherwise a VPN blip
- * signs the user out and destroys the stored token.
+ * Codes the Den API uses when the session itself is invalid, expired, or
+ * revoked. Only these may destroy the stored token; every other 401 code is
+ * treated as the control plane being temporarily unreachable.
+ */
+const DEN_SESSION_TERMINATION_CODES = new Set([
+  "unauthorized",
+  "invalid_session",
+  "session_expired",
+  "session_revoked",
+  "session_not_found",
+  "invalid_token",
+  "token_expired",
+  "token_revoked",
+]);
+
+/**
+ * True only for 401s whose Den error code explicitly names an invalid,
+ * expired, or revoked session. A bare/foreign 401 from a corporate proxy or
+ * captive portal — and structured 401s minted by deployment infrastructure in
+ * front of the control plane (`base_url_not_present`, misrouted proxies,
+ * platform placeholders) — must be treated as "unavailable", not as a revoked
+ * session. Otherwise a VPN blip or a mid-deploy edge response signs the user
+ * out and destroys the stored token.
  */
 export function isDenSessionRevokedError(error: unknown): boolean {
-  return error instanceof DenApiError && error.status === 401 && error.code !== "request_failed";
+  return (
+    error instanceof DenApiError &&
+    error.status === 401 &&
+    DEN_SESSION_TERMINATION_CODES.has(error.code)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1187,9 +1215,17 @@ export function clearDenSession(options?: { includeBaseUrls?: boolean }) {
   window.localStorage.removeItem(STORAGE_ACTIVE_ORG_SLUG);
   window.localStorage.removeItem(STORAGE_ACTIVE_ORG_NAME);
   window.localStorage.removeItem(CLOUD_MCP_SYNC_MARKER_STORAGE_KEY);
+  // Sign-out resets any in-flight sign-in intent and pending org choice so a
+  // later handoff starts from a clean slate.
+  clearDesktopSignInIntent();
+  clearOrgSelectionPending();
 
   dispatchDenSettingsChanged({
     settings: readDenSettings(),
+  });
+  dispatchDenSessionUpdated({
+    status: "signed_out",
+    baseUrl: readDenSettings().baseUrl,
   });
 }
 
@@ -1244,6 +1280,20 @@ function getErrorMessage(payload: unknown, fallback: string): string {
 
   if (!isRecord(payload)) {
     return fallback;
+  }
+
+  if (payload.error === "password_too_weak" && isRecord(payload.feedback)) {
+    const feedback = payload.feedback;
+    const messages = [
+      typeof feedback.warning === "string" ? feedback.warning.trim() : "",
+      ...(Array.isArray(feedback.suggestions) ? feedback.suggestions : [])
+        .filter((suggestion): suggestion is string => typeof suggestion === "string" && suggestion.trim().length > 0)
+        .map((suggestion) => suggestion.trim()),
+    ].filter((message) => message.length > 0);
+
+    if (messages.length > 0) {
+      return messages.join("\n");
+    }
   }
 
   if (typeof payload.message === "string" && payload.message.trim()) {
@@ -2179,6 +2229,7 @@ type DenRequestOptions = {
   body?: unknown;
   timeoutMs?: number;
   organizationId?: string | null;
+  automationModelAttentionCapable?: boolean;
 };
 
 async function fetchWithTimeout(fetchImpl: FetchLike, url: string, init: RequestInit, timeoutMs: number) {
@@ -2224,6 +2275,9 @@ async function requestJsonRaw<T>(
   const organizationId = options.organizationId?.trim() ?? "";
   if (organizationId) {
     headers[ORG_PROXY_HEADER] = organizationId;
+  }
+  if (options.automationModelAttentionCapable) {
+    headers[AUTOMATION_MODEL_ATTENTION_CAPABILITY_HEADER] = AUTOMATION_MODEL_ATTENTION_CAPABILITY;
   }
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -2312,16 +2366,17 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return { user: getUser(payload), token: getToken(payload) };
     },
 
-    async signUpEmail(email: string, password: string): Promise<DenAuthResult> {
-      const payload = await requestJson<unknown>(baseUrls, "/api/auth/sign-up/email", {
-        method: "POST",
-        body: {
-          name: DEFAULT_DEN_AUTH_NAME,
-          email: email.trim(),
-          password,
-        },
-      });
-      return { user: getUser(payload), token: getToken(payload) };
+    /**
+     * @deprecated Desktop email/password signup is no longer supported directly.
+     * Open the Den browser signup flow with `buildDenAuthUrl(baseUrl, "sign-up")`
+     * so password-strength feedback and invite handling stay server-compatible.
+     */
+    async signUpEmail(_email: string, _password: string): Promise<DenAuthResult> {
+      throw new DenApiError(
+        410,
+        "desktop_signup_deprecated",
+        "Create your account in the browser to choose a secure password.",
+      );
     },
 
     async signOut() {
@@ -2521,6 +2576,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
         method: "GET",
         token,
         organizationId: orgId,
+        automationModelAttentionCapable: true,
       });
     },
 
@@ -2530,6 +2586,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
         token,
         organizationId: orgId,
         body: registration,
+        automationModelAttentionCapable: true,
       });
     },
 
@@ -2539,6 +2596,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
         token,
         organizationId: orgId,
         body: input,
+        automationModelAttentionCapable: true,
       });
     },
 
@@ -2546,7 +2604,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<AutomationDetail>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}`,
-        { method: "GET", token, organizationId: orgId },
+        { method: "GET", token, organizationId: orgId, automationModelAttentionCapable: true },
       );
     },
 
@@ -2558,7 +2616,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<AutomationDetail>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}`,
-        { method: "PATCH", token, organizationId: orgId, body: input },
+        { method: "PATCH", token, organizationId: orgId, body: input, automationModelAttentionCapable: true },
       );
     },
 
@@ -2566,7 +2624,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<AutomationDetail>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}/activate`,
-        { method: "POST", token, organizationId: orgId, body: {} },
+        { method: "POST", token, organizationId: orgId, body: {}, automationModelAttentionCapable: true },
       );
     },
 
@@ -2574,7 +2632,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<AutomationDetail>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}/deactivate`,
-        { method: "POST", token, organizationId: orgId, body: {} },
+        { method: "POST", token, organizationId: orgId, body: {}, automationModelAttentionCapable: true },
       );
     },
 
@@ -2582,7 +2640,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<AutomationDetail>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}`,
-        { method: "DELETE", token, organizationId: orgId },
+        { method: "DELETE", token, organizationId: orgId, automationModelAttentionCapable: true },
       );
     },
 
@@ -2590,7 +2648,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       const payload = await requestJson<{ run: AutomationRun }>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}/run`,
-        { method: "POST", token, organizationId: orgId, body: {} },
+        { method: "POST", token, organizationId: orgId, body: {}, automationModelAttentionCapable: true },
       );
       return payload.run;
     },
@@ -2607,7 +2665,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<{ items: AutomationRun[]; nextCursor: string | null }>(
         baseUrls,
         `/v1/automations/${encodeURIComponent(automationId)}/runs${query}`,
-        { method: "GET", token, organizationId: orgId },
+        { method: "GET", token, organizationId: orgId, automationModelAttentionCapable: true },
       );
     },
 
@@ -2615,7 +2673,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       return requestJson<AutomationRunReceipt>(
         baseUrls,
         `/v1/automation-runs/${encodeURIComponent(runId)}`,
-        { method: "GET", token, organizationId: orgId },
+        { method: "GET", token, organizationId: orgId, automationModelAttentionCapable: true },
       );
     },
 
@@ -2623,7 +2681,7 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       const payload = await requestJson<{ run: AutomationRun }>(
         baseUrls,
         `/v1/automation-runs/${encodeURIComponent(runId)}/cancel`,
-        { method: "POST", token, organizationId: orgId, body: {} },
+        { method: "POST", token, organizationId: orgId, body: {}, automationModelAttentionCapable: true },
       );
       return payload.run;
     },

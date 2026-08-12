@@ -147,6 +147,7 @@ import { useLocal } from "@/react-app/kernel/local-provider";
 import { usePlatform } from "@/react-app/kernel/platform";
 import { SessionPage, type OpenSessionTab } from "@/react-app/domains/session/chat/session-page";
 import { AutomationsPage } from "@/react-app/domains/automations/automations-page";
+import { automationsStateChangedEvent } from "@/react-app/domains/automations/automation-events";
 import type { NewTaskComposerContext } from "@/react-app/domains/session/chat/new-task-composer";
 import { isDesktopProviderBlocked } from "@/app/cloud/desktop-app-restrictions";
 import { useCheckDesktopRestriction } from "@/react-app/domains/cloud/desktop-config-provider";
@@ -175,12 +176,14 @@ import { CreateRemoteWorkspaceModal } from "@/react-app/domains/workspace/create
 import { CreateWorkspaceModal } from "@/react-app/domains/workspace/create-workspace-modal";
 import type { CreateWorkspaceOptions } from "@/react-app/domains/workspace/types";
 import { isCloudManagedProviderKey } from "@/react-app/domains/connections/provider-auth/cloud-provider-config";
+import { assignedModelOptions } from "@/react-app/domains/connections/provider-auth/assigned-model-options";
 import {
   filterEntitledModelOptions,
   resolveEntitledOrgDefaultModel,
   type ModelEntitlementOption,
 } from "@/react-app/domains/connections/provider-auth/provider-policy";
 import {
+  isManagedModelAvailabilityPending,
   isOrganizationModelsEmpty,
   shouldAutoOpenUnavailableModelPicker,
 } from "@/react-app/domains/connections/provider-auth/managed-models-recovery";
@@ -197,6 +200,10 @@ import { useRemoteAccessRestart } from "@/react-app/domains/workspace/remote-acc
 import { RenameWorkspaceModal } from "@/react-app/domains/workspace/rename-workspace-modal";
 import { useRemoteWorkspaceConnectionEditor } from "@/react-app/domains/workspace/use-remote-workspace-connection-editor";
 import { useDenAuth } from "@/react-app/domains/cloud/den-auth-provider";
+import {
+  hasOpenWorkModelsAvailable,
+  shouldShowOpenWorkModelsSyncing,
+} from "@/react-app/domains/cloud/openwork-models-promo";
 import {
   diagnoseRemoteWorkspaceTaskLoadFailure,
   getRemoteWorkspaceConnectionKey,
@@ -592,6 +599,7 @@ export function SessionRoute() {
   const automationsRouteActive = automationsEnabled && automationsRouteRequested;
   const denSettings = readDenSettings();
   const [automationsSupported, setAutomationsSupported] = useState(false);
+  const [automationsNeedAttention, setAutomationsNeedAttention] = useState(false);
   useEffect(() => {
     if (!automationsRouteRequested || automationsEnabled) return;
     navigate("/", { replace: true });
@@ -601,19 +609,31 @@ export function SessionRoute() {
     const organizationId = denSettings.activeOrgId?.trim();
     if (!automationsEnabled || !denAuth.isSignedIn || !authToken || !organizationId) {
       setAutomationsSupported(false);
+      setAutomationsNeedAttention(false);
       return;
     }
     let cancelled = false;
-    void createDenClient({ baseUrl: denSettings.baseUrl, token: authToken })
-      .listAutomations(organizationId, { limit: 1 })
-      .then(() => {
-        if (!cancelled) setAutomationsSupported(true);
-      })
-      .catch(() => {
-        if (!cancelled) setAutomationsSupported(false);
-      });
+    const client = createDenClient({ baseUrl: denSettings.baseUrl, token: authToken });
+    const refreshAutomationState = () => {
+      void client.listAutomations(organizationId, { limit: 100 })
+        .then((result) => {
+          if (cancelled) return;
+          setAutomationsSupported(true);
+          setAutomationsNeedAttention(result.items.some((item) => item.automation.state === "needs_attention"));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAutomationsSupported(false);
+          setAutomationsNeedAttention(false);
+        });
+    };
+    refreshAutomationState();
+    const interval = window.setInterval(refreshAutomationState, 15_000);
+    window.addEventListener(automationsStateChangedEvent, refreshAutomationState);
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener(automationsStateChangedEvent, refreshAutomationState);
     };
   }, [
     automationsEnabled,
@@ -662,7 +682,6 @@ export function SessionRoute() {
     setLegacySelectedWorkspaceId,
     retryingWorkspaceIds,
     setRetryingWorkspaceIds,
-    refreshInFlightRef,
     startupRetryTimerRef,
     selectedWorkspaceId,
     selectedWorkspace,
@@ -700,9 +719,8 @@ export function SessionRoute() {
       nextStatus: cloudWorkspace.viewModel.variant,
       gatewayMode: cloudWorkspace.gatewayMode && cloudWorkspace.visible,
     })) return;
-    refreshInFlightRef.current = false;
-    void refreshRouteState();
-  }, [cloudWorkspace.gatewayMode, cloudWorkspace.viewModel.variant, cloudWorkspace.visible, refreshInFlightRef, refreshRouteState]);
+    void refreshRouteState({ supersede: true });
+  }, [cloudWorkspace.gatewayMode, cloudWorkspace.viewModel.variant, cloudWorkspace.visible, refreshRouteState]);
   const cloudMcpProviderModel = useMemo(() => local.prefs.defaultModel
     ? {
         provider: local.prefs.defaultModel.providerID,
@@ -1028,11 +1046,16 @@ export function SessionRoute() {
     selectedWorkspaceEndpoint,
     selectedWorkspaceRoot,
     selectedWorkspaceId,
+    localServerHostToken: openworkServerHostInfoState?.hostToken?.trim() ?? "",
     setProviders,
     setProviderDefaults,
     setProviderConnectedIds,
     setDisabledProviderIds,
   });
+  const organizationAssignedModelOptions = useMemo(
+    () => assignedModelOptions(sessionProviderAuthSnapshot.cloudOrgProviders),
+    [sessionProviderAuthSnapshot.cloudOrgProviders],
+  );
   useEffect(() => {
     if (!denAuth.isSignedIn) {
       setActiveOrganizationRole(null);
@@ -1096,9 +1119,6 @@ export function SessionRoute() {
     if (!cloudProviderSyncReady || !cloudProviderList) return;
     clearCloudMcpSubmissionFailure();
   }, [clearCloudMcpSubmissionFailure, cloudProviderList, cloudProviderSyncReady]);
-  const refreshOpenWorkModels = useCallback(async () => {
-    await refreshOrganizationModelAccess();
-  }, [refreshOrganizationModelAccess]);
   const organizationModelsSettingsUrl = useMemo(() => {
     if (!isDenOrgAdminRole(activeOrganizationRole)) {
       return undefined;
@@ -1106,15 +1126,34 @@ export function SessionRoute() {
     return new URL("/dashboard/custom-llm-providers", readDenSettings().baseUrl).toString();
   }, [activeOrganizationRole, denSessionVersion]);
   const restrictToCloudProviders = checkDesktopRestriction({ restriction: "allowCustomProviders" });
-  const entitledModelOptions = useMemo(() =>
-    filterEntitledModelOptions(
-      providerListModelEntitlementOptions(cloudProviderList ?? providerListQuery.data),
+  const entitledModelOptions = useMemo(() => {
+    const runtimeOptions = providerListModelEntitlementOptions(
+      cloudProviderList ?? providerListQuery.data,
+    );
+    return filterEntitledModelOptions(
+      runtimeOptions.length > 0 ? runtimeOptions : organizationAssignedModelOptions,
       {
         restrictToCloud: restrictToCloudProviders,
         checkRestriction: checkDesktopRestriction,
       },
-    ),
-  [checkDesktopRestriction, cloudProviderList, providerListQuery.data, restrictToCloudProviders]);
+    );
+  }, [
+    checkDesktopRestriction,
+    cloudProviderList,
+    organizationAssignedModelOptions,
+    providerListQuery.data,
+    restrictToCloudProviders,
+  ]);
+  const openWorkModelsAvailable = hasOpenWorkModelsAvailable({
+    providerConnectedIds,
+    providers,
+  });
+  const openWorkModelsSyncing = shouldShowOpenWorkModelsSyncing({
+    entitled: openWorkModelsEntitled,
+    available: openWorkModelsAvailable,
+    workspaceReady: Boolean(selectedWorkspaceId && opencodeClient),
+    reloadPending: sessionProviderAuthSnapshot.cloudProviderServerSync?.reloadPending === true,
+  });
   const organizationModelsEmpty = isOrganizationModelsEmpty({
     workspaceReady: Boolean(selectedWorkspaceId && opencodeClient),
     loading,
@@ -1127,6 +1166,8 @@ export function SessionRoute() {
     baseUrl: opencodeBaseUrl,
     workspaceRoot: selectedWorkspaceRoot,
     onOpen: handleModelPickerOpen,
+    fallbackOptions: organizationAssignedModelOptions,
+    cloudProvidersEnabled: denAuth.isSignedIn,
   });
   // Which session the open model picker targets. Selecting a model while a
   // session is targeted remembers it for that conversation only; null means
@@ -1147,23 +1188,40 @@ export function SessionRoute() {
   const selectedModelProviderList = selectedModelUsesCloudProvider
     ? cloudProviderList
     : providerListQuery.data;
-  const entitledOrgDefaultModel = useMemo(() =>
-    resolveEntitledOrgDefaultModel(
-      providerListModelEntitlementOptions(cloudProviderList ?? providerListQuery.data),
+  const entitledOrgDefaultModel = useMemo(() => {
+    const runtimeOptions = providerListModelEntitlementOptions(
+      cloudProviderList ?? providerListQuery.data,
+    );
+    return resolveEntitledOrgDefaultModel(
+      runtimeOptions.length > 0 ? runtimeOptions : organizationAssignedModelOptions,
       {
         currentDefault: local.prefs.defaultModel,
         restrictToCloud: restrictToCloudProviders,
         checkRestriction: checkDesktopRestriction,
       },
-    ),
-  [checkDesktopRestriction, cloudProviderList, local.prefs.defaultModel, providerListQuery.data, restrictToCloudProviders]);
+    );
+  }, [
+    checkDesktopRestriction,
+    cloudProviderList,
+    local.prefs.defaultModel,
+    organizationAssignedModelOptions,
+    providerListQuery.data,
+    restrictToCloudProviders,
+  ]);
   useEffect(() => {
     if (entitledOrgDefaultModel) writeStoredDefaultModel(entitledOrgDefaultModel);
   }, [entitledOrgDefaultModel]);
+  const selectedModelAvailabilityPending = isManagedModelAvailabilityPending({
+    signedIn: denAuth.isSignedIn,
+    selectedModelUsesCloudProvider,
+    cloudProviderSyncReady,
+    openWorkModelsSyncing,
+  });
   const selectedModelUnavailable = Boolean(
     selectedWorkspaceId &&
       opencodeClient &&
       !loading &&
+      !selectedModelAvailabilityPending &&
       local.prefs.defaultModel &&
       (!selectedModelUsesCloudProvider || cloudProviderSyncReady) &&
       (
@@ -1214,9 +1272,18 @@ export function SessionRoute() {
     modelPicker.setOpen(true);
   }, [cloudProviderSyncReady, denAuth.isSignedIn, entitledOrgDefaultModel, modelPicker.setCompactOpen, modelPicker.setOpen, modelPicker.setQuery, modelPicker.setRecentProviderIds, organizationModelsEmpty, selectedModelUnavailableKey]);
 
-  const hasUsableModel = Boolean(local.prefs.defaultModel && !selectedModelUnavailable);
+  const hasUsableModel = Boolean(
+    local.prefs.defaultModel &&
+      !selectedModelUnavailable &&
+      !selectedModelAvailabilityPending,
+  );
   const canCreateTask = Boolean(
-    opencodeClient && selectedWorkspaceId && !loading && !selectedWorkspaceError && !selectedModelUnavailable,
+    opencodeClient &&
+      selectedWorkspaceId &&
+      !loading &&
+      !selectedWorkspaceError &&
+      !selectedModelUnavailable &&
+      !selectedModelAvailabilityPending,
   );
 
   const {
@@ -1241,6 +1308,7 @@ export function SessionRoute() {
   const showPreparingStatus =
     !organizationModelsEmpty &&
     (effectiveLoading ||
+      selectedModelAvailabilityPending ||
       (!canCreateTask && !routeError && !selectedWorkspaceError));
 
   useEffect(() => {
@@ -1255,18 +1323,17 @@ export function SessionRoute() {
 
     const applyProviderState = (value: ProviderListResponse) => {
       if (cancelled) return;
-      // When not signed in, filter out cloud-managed providers (lpr_*)
-      // so stale entries from a previous session don't appear.
+      // When not signed in, filter out every cloud-managed provider key so
+      // stale org imports and the hosted `openwork` catalog do not reappear.
       const hasCloudAuth = !!readDenSettings().authToken?.trim();
-      const isCloudProvider = (id: string) => /^lpr_/i.test(id);
       const all = hasCloudAuth
         ? ((value.all ?? []) as ProviderListItem[])
         : ((value.all ?? []) as ProviderListItem[]).filter(
-            (p) => !isCloudProvider(p.id ?? ""),
+            (provider) => !isCloudManagedProviderKey(provider.id ?? ""),
           );
       const connected = hasCloudAuth
         ? (value.connected ?? [])
-        : (value.connected ?? []).filter((id) => !isCloudProvider(id));
+        : (value.connected ?? []).filter((id) => !isCloudManagedProviderKey(id));
       setProviders(all);
       setProviderConnectedIds(connected);
       // New-provider detection is handled globally by the provider auth
@@ -1433,6 +1500,7 @@ export function SessionRoute() {
       organizationModelsEmpty,
       selectedModel: local.prefs.defaultModel ?? { providerID: "", modelID: "" },
       openWorkModelsEntitled,
+      openWorkModelsSyncing,
       onRefreshOrganizationModels: refreshOrganizationModelAccess,
       onModelPickerOpenChange: (open: boolean) => {
         modelPicker.setCompactOpen(open);
@@ -1768,6 +1836,7 @@ export function SessionRoute() {
     navigate,
     providerCatalog,
     openWorkModelsEntitled,
+    openWorkModelsSyncing,
     refreshCloudProviderSync,
     refreshOrganizationModelAccess,
     opencodeBaseUrl,
@@ -1817,11 +1886,11 @@ export function SessionRoute() {
   // created. Model and agent choices land in the same route-level state the
   // session composer reads, so they carry into the created session.
   const newTaskComposerContext = useMemo<NewTaskComposerContext | null>(() => {
-    if (!client) return null;
     return {
       client,
       workspaceId: selectedWorkspaceId || null,
       selectedModel: local.prefs.defaultModel ?? { providerID: "", modelID: "" },
+      modelOptions: organizationAssignedModelOptions,
       modelUnavailable: selectedModelUnavailable,
       modelUnavailableMessage,
       organizationModelsEmpty,
@@ -1830,6 +1899,7 @@ export function SessionRoute() {
       onModelPickerOpenChange: (open: boolean) => {
         modelPicker.setCompactOpen(open);
         if (open) {
+          void sessionProviderAuthStore.refreshCloudOrgProviders({ force: true }).catch(() => undefined);
           void refreshCloudProviderSync("model_picker_open");
         }
       },
@@ -1844,6 +1914,7 @@ export function SessionRoute() {
         modelPicker.setCompactOpen(false);
       },
       openWorkModelsEntitled,
+      openWorkModelsSyncing,
       modelVariantLabel,
       modelVariant: modelVariantValue,
       modelBehaviorOptions,
@@ -1888,6 +1959,8 @@ export function SessionRoute() {
     modelVariantValue,
     opencodeClient,
     openWorkModelsEntitled,
+    openWorkModelsSyncing,
+    organizationAssignedModelOptions,
     organizationModelsEmpty,
     refreshCloudProviderSync,
     refreshOrganizationModelAccess,
@@ -1896,6 +1969,7 @@ export function SessionRoute() {
     selectedWorkspace,
     selectedWorkspaceId,
     selectedWorkspaceRoot,
+    sessionProviderAuthStore,
     setSelectedAgent,
   ]);
 
@@ -2089,8 +2163,7 @@ export function SessionRoute() {
         if (startupRetryTimerRef.current === null) {
           startupRetryTimerRef.current = window.setTimeout(() => {
             startupRetryTimerRef.current = null;
-            refreshInFlightRef.current = false;
-            void refreshRouteState();
+            void refreshRouteState({ supersede: true });
           }, 1_000);
         }
       }
@@ -3387,6 +3460,8 @@ export function SessionRoute() {
     <WorkspaceProvider
       client={opencodeClient}
       opencodeBaseUrl={opencodeBaseUrl}
+      openworkServerClient={selectedWorkspaceEndpoint?.client ?? null}
+      workspaceId={selectedWorkspaceEndpoint?.workspaceId ?? ""}
       selectedWorkspaceRoot={selectedWorkspaceRoot}
     >
     {opencodeClient && selectedWorkspaceEndpoint && opencodeBaseUrl && selectedWorkspaceServerToken ? (
@@ -3515,6 +3590,7 @@ export function SessionRoute() {
         sidebarHydratedFromCache: Object.values(sessionsByWorkspaceId).some((list) => list.length > 0),
         startupPhase: effectiveLoading ? "nativeInit" : "ready",
         automationsActive: automationsRouteActive,
+        automationsNeedAttention,
         onOpenAutomations: automationsNavigationAvailable
           ? () => {
               navigate(automationsRoute());
@@ -3895,7 +3971,7 @@ export function SessionRoute() {
       }}
       onClose={() => { modelPicker.setOpen(false); modelPicker.setRecentProviderIds(new Set()); }}
       openWorkModelsEntitled={openWorkModelsEntitled}
-      onRefreshOpenWorkModels={refreshOpenWorkModels}
+      openWorkModelsSyncing={openWorkModelsSyncing}
       onRefreshOrganizationModels={refreshOrganizationModelAccess}
       restrictToCloud={restrictToCloudProviders}
     />

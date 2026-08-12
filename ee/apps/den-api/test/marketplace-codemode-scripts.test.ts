@@ -3,6 +3,7 @@ import { Tool } from "@openwork/codemode"
 import { eq, inArray } from "@openwork-ee/den-db/drizzle"
 import {
   AuthUserTable,
+  CodemodeRunTable,
   ConfigObjectAccessGrantTable,
   ConfigObjectTable,
   ConfigObjectVersionTable,
@@ -17,6 +18,7 @@ import {
 } from "@openwork-ee/den-db/schema"
 import { createDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
 import { Effect } from "effect"
+import { Hono } from "hono"
 import type { PluginArchActorContext } from "../src/routes/org/plugin-system/access.js"
 
 function seedRequiredEnv() {
@@ -29,7 +31,10 @@ function seedRequiredEnv() {
 
 type Db = typeof import("../src/db.js").db
 type MarketplaceCapabilities = typeof import("../src/mcp/marketplace-capabilities.js")
+type CapabilityRegistry = typeof import("../src/mcp/capability-registry.js")
 type PluginStore = typeof import("../src/routes/org/plugin-system/store.js")
+type SavedScripts = typeof import("../src/codemode-scripts.js")
+type CodemodeRuns = typeof import("../src/codemode-runs.js")
 
 type SeededScript = {
   configObjectId: DenTypeId<"configObject">
@@ -40,7 +45,10 @@ type SeededScript = {
 
 let db: Db
 let marketplaceCapabilities: MarketplaceCapabilities
+let capabilityRegistry: CapabilityRegistry
 let pluginStore: PluginStore
+let savedScripts: SavedScripts
+let codemodeRuns: CodemodeRuns
 const createdOrganizationIds: DenTypeId<"organization">[] = []
 const createdUserIds: DenTypeId<"user">[] = []
 
@@ -54,6 +62,9 @@ beforeAll(async () => {
   mock.module("../src/db.js", () => ({ db }))
   pluginStore = await import("../src/routes/org/plugin-system/store.js")
   marketplaceCapabilities = await import("../src/mcp/marketplace-capabilities.js")
+  savedScripts = await import("../src/codemode-scripts.js")
+  codemodeRuns = await import("../src/codemode-runs.js")
+  capabilityRegistry = await import("../src/mcp/capability-registry.js")
 })
 
 afterAll(() => {
@@ -62,6 +73,7 @@ afterAll(() => {
 
 afterEach(async () => {
   if (createdOrganizationIds.length > 0) {
+    await db.delete(CodemodeRunTable).where(inArray(CodemodeRunTable.organization_id, createdOrganizationIds))
     await db.delete(ConfigObjectVersionTable).where(inArray(ConfigObjectVersionTable.organizationId, createdOrganizationIds))
     await db.delete(ConfigObjectAccessGrantTable).where(inArray(ConfigObjectAccessGrantTable.organizationId, createdOrganizationIds))
     await db.delete(PluginConfigObjectTable).where(inArray(PluginConfigObjectTable.organizationId, createdOrganizationIds))
@@ -176,11 +188,13 @@ function executeScript(seeded: SeededScript, input: {
   body?: unknown
   buildTools?: Parameters<MarketplaceCapabilities["executeMarketplaceCapability"]>[0]["buildTools"]
   codemodeEnabled?: boolean
+  validateScriptOutput?: boolean
 } = {}) {
   return marketplaceCapabilities.executeMarketplaceCapability({
     body: input.body,
     buildTools: input.buildTools,
     codemodeEnabled: input.codemodeEnabled ?? true,
+    validateScriptOutput: input.validateScriptOutput,
     configObjectId: seeded.configObjectId,
     enabled: true,
     member: seeded.member,
@@ -190,6 +204,65 @@ function executeScript(seeded: SeededScript, input: {
 }
 
 describe("saved marketplace scripts", () => {
+  test("promotes a successful run using strict public capability references", async () => {
+    const seeded = await seedScript({
+      title: "Promotion Fixture",
+      code: "return null",
+      payload: { language: "codemode-js", requiredCapabilities: [] },
+    })
+    const code = "return { briefing: await tools.reports.echo({ text: input.topic }) }"
+    const now = new Date()
+    await db.insert(CodemodeRunTable).values({
+      id: createDenTypeId("codemodeRun"),
+      organization_id: seeded.organizationId,
+      org_membership_id: seeded.member.orgMembershipId,
+      source: "mcp",
+      code_digest: codemodeRuns.codemodeCodeDigest(code),
+      status: "succeeded",
+      tool_calls: [{ name: "tools.reports.echo" }],
+      tool_call_count: 1,
+      duration_ms: 5,
+      started_at: now,
+      finished_at: now,
+    })
+
+    const saved = await savedScripts.saveCodemodeScript({
+      organizationId: seeded.organizationId,
+      ownerMemberId: seeded.member.orgMembershipId,
+      script: {
+        name: "Promoted briefing",
+        code,
+        currentInput: { topic: "launch" },
+        inputSchema: {
+          type: "object",
+          properties: { topic: { type: "string" } },
+          required: ["topic"],
+        },
+      },
+      buildTools: async () => ({
+        tools: {},
+        manifest: [{
+          capabilityName: "reports.echo",
+          scriptPath: "tools.reports.echo",
+          readOnly: true,
+          authority: "external",
+        }],
+      }),
+    })
+
+    const versions = await db.select().from(ConfigObjectVersionTable)
+      .where(eq(ConfigObjectVersionTable.id, saved.configObjectVersionId))
+    expect(versions[0]?.normalizedPayloadJson).toMatchObject({
+      language: "codemode-js",
+      requiredCapabilities: [{
+        capabilityName: "reports.echo",
+        scriptPath: "tools.reports.echo",
+      }],
+    })
+    expect(versions[0]?.normalizedPayloadJson).not.toHaveProperty("requiredCapabilities.0.readOnly")
+    expect(versions[0]?.normalizedPayloadJson).not.toHaveProperty("requiredCapabilities.0.unattendedApproved")
+  })
+
   test("executes a createPluginBundle saved script with typed input binding", async () => {
     const seeded = await seedScript({
       title: "Summarize Account",
@@ -280,6 +353,66 @@ describe("saved marketplace scripts", () => {
     expect(invocations).toBe(0)
   })
 
+  test("keeps saved scripts and execute_capability_script out of the composable tree", async () => {
+    const seeded = await seedScript({
+      title: "Recursive Script",
+      code: "return 'must not run'",
+      payload: { language: "codemode-js", requiredCapabilities: [] },
+    })
+    const capabilityName = marketplaceCapabilities.buildMarketplaceCapabilityName(seeded.pluginId, seeded.configObjectId)
+    const requiredCapabilities = [
+      { capabilityName, scriptPath: `tools.marketplace[${JSON.stringify(capabilityName)}]` },
+      { capabilityName: "execute_capability_script", scriptPath: "tools.den.execute_capability_script" },
+    ]
+    await db.update(ConfigObjectVersionTable)
+      .set({ normalizedPayloadJson: { language: "codemode-js", requiredCapabilities } })
+      .where(eq(ConfigObjectVersionTable.configObjectId, seeded.configObjectId))
+
+    let platformAdmin: Promise<boolean> | undefined
+    const context: Parameters<CapabilityRegistry["buildCapabilityToolTree"]>[0] = {
+      app: new Hono(),
+      env: undefined,
+      catalog: [],
+      principal: {
+        userId: createDenTypeId("user"),
+        organizationId: seeded.organizationId,
+        scopes: new Set(["mcp:read", "mcp:write"]),
+        payload: {},
+      },
+      organizationId: seeded.organizationId,
+      member: seeded.member,
+      redirectUriBase: "http://127.0.0.1:8790",
+      codemodeEnabled: true,
+      externalMcpConnectionsEnabled: true,
+      resolvePlatformAdmin: () => {
+        platformAdmin ??= Promise.resolve(false)
+        return platformAdmin
+      },
+      resolveNamespaceContext: () => Promise.resolve({
+        nativeProviderEntries: [],
+        externalMcpConnections: [],
+        codemodeNativeProviderEntries: [],
+        codemodeExternalMcpConnections: [],
+        namespaces: { native: new Map(), externalMcp: new Map() },
+      }),
+    }
+    const built = await capabilityRegistry.buildCapabilityToolTree(context)
+    expect(built.manifest).not.toContainEqual(expect.objectContaining({ capabilityName }))
+    expect(built.manifest).not.toContainEqual(expect.objectContaining({ capabilityName: "execute_capability_script" }))
+
+    const result = await executeScript(seeded, {
+      buildTools: () => capabilityRegistry.buildCapabilityToolTree(context),
+    })
+    expect(result).toMatchObject({
+      ok: false,
+      error: "capability_unavailable",
+      providerCallAttempted: false,
+      missing: requiredCapabilities,
+    })
+    if (result.ok) throw new Error("Expected saved-script recursion to be blocked")
+    expect(result.message).toContain("is unavailable or disabled")
+  })
+
   test("rejects input that does not match the saved inputSchema", async () => {
     const seeded = await seedScript({
       title: "Typed Script",
@@ -304,5 +437,59 @@ describe("saved marketplace scripts", () => {
     })
     if (result.ok || result.error !== "invalid_capability_arguments") throw new Error("Expected invalid script arguments")
     expect(result.issues.length).toBeGreaterThan(0)
+  })
+
+  test("validates saved script output before returning an artifact-ready result", async () => {
+    const seeded = await seedScript({
+      title: "Typed Result Script",
+      code: "return { count: 'not-a-number' }",
+      payload: {
+        language: "codemode-js",
+        outputSchema: {
+          type: "object",
+          properties: { count: { type: "number" } },
+          required: ["count"],
+        },
+        requiredCapabilities: [],
+      },
+    })
+
+    const legacyResult = await executeScript(seeded)
+    if (!legacyResult.ok) throw new Error(legacyResult.message)
+    expect(legacyResult.result).toMatchObject({ status: "executed", value: { count: "not-a-number" } })
+
+    const result = await executeScript(seeded, { validateScriptOutput: true })
+    expect(result).toMatchObject({
+      ok: false,
+      error: "invalid_capability_arguments",
+      sameArgumentsRetryable: false,
+    })
+  })
+
+  test("lists accessible scripts with exact versions and artifact schemas", async () => {
+    const seeded = await seedScript({
+      title: "Artifact Script",
+      code: "return { briefing: input.topic }",
+      payload: {
+        language: "codemode-js",
+        inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] },
+        outputSchema: { type: "object", properties: { briefing: { type: "string" } }, required: ["briefing"] },
+        requiredCapabilities: [],
+      },
+    })
+
+    const scripts = await marketplaceCapabilities.listAccessibleSavedCodemodeScripts({
+      member: seeded.member,
+      organizationId: seeded.organizationId,
+    })
+    expect(scripts).toHaveLength(1)
+    expect(scripts[0]).toMatchObject({
+      pluginId: seeded.pluginId,
+      configObjectId: seeded.configObjectId,
+      title: "Artifact Script",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+    })
+    expect(scripts[0]?.configObjectVersionId).toStartWith("cov_")
   })
 })
