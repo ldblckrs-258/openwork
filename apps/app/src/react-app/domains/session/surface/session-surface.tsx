@@ -1,10 +1,15 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
-import type { RoleplayTurnRecord } from "@openwork/types/roleplay";
+import type {
+  RoleplayPersonaRecord,
+  RoleplaySessionSettings,
+  RoleplayTurnRecord,
+} from "@openwork/types/roleplay";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
-import { Check, LoaderCircle, Minimize2 } from "lucide-react";
+import { Check, LoaderCircle, Minimize2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
 
 import { captureAnalyticsEvent } from "@/app/lib/analytics";
@@ -43,7 +48,10 @@ import type {
 import { compileDraftText } from "@/app/roleplay/blocks";
 import { activeAlternativeText } from "@/app/roleplay/swipe";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
-import { StorySoFar } from "@/react-app/domains/roleplay/components/story-so-far";
+import {
+  SessionSettingsPanel,
+  type RoleplayTurnDiagnostics,
+} from "@/react-app/domains/roleplay/components/session-settings-panel";
 import { ReactSessionComposer } from "./composer/composer";
 import { useSessionModelSelection } from "./session-model-store";
 import type { ProviderCatalog } from "./use-model-behavior";
@@ -314,6 +322,12 @@ export type RoleplayControls = {
   onExtractMemories: () => void;
   /** Proposes edits to the character's own card. User-triggered for the same reason. */
   onProposeRevision: () => void;
+  personas: RoleplayPersonaRecord[];
+  personaId: string;
+  onSelectPersona: (personaId: string) => void;
+  onChangeSettings: (settings: RoleplaySessionSettings) => void;
+  /** What the last send actually put in the prompt; null until this session has sent one. */
+  diagnostics: RoleplayTurnDiagnostics | null;
 };
 
 export type SessionSurfaceProps = {
@@ -326,6 +340,14 @@ export type SessionSurfaceProps = {
   roleplay?: RoleplaySurfaceState | null;
   /** Regenerate/branch/story-so-far, rendered above the composer for roleplay sessions. */
   roleplayControls?: RoleplayControls | null;
+  /**
+   * Whether the settings panel is showing.
+   *
+   * Owned by the page rather than here, because its toggle sits in the session
+   * header — which this component does not render.
+   */
+  roleplaySettingsOpen?: boolean;
+  onRoleplaySettingsOpenChange?: (open: boolean) => void;
   isControlTarget: boolean;
   opencodeBaseUrl: string;
   openworkToken: string;
@@ -1005,6 +1027,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
         ? {
             charName: props.roleplay.characterName || "Character",
             userName: props.roleplay.persona.name || "User",
+            colorSegments: props.roleplay.settings.colorSegments !== false,
           }
         : null,
     [props.roleplay],
@@ -2042,11 +2065,12 @@ export function SessionSurface(props: SessionSurfaceProps) {
 
   return (
     <DevProfiler id="SessionSurface">
+    <div className="flex h-full min-h-0">
     <div
       data-session-surface-id={props.sessionId}
       onPointerDownCapture={handleFindSurfaceInteraction}
       onFocusCapture={handleFindSurfaceInteraction}
-      className="flex h-full min-h-0 flex-col"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
     >
       {model.transitionState === "switching" && showDelayedLoading ? (
         <div className="flex justify-center px-6 pt-4">
@@ -2233,22 +2257,15 @@ export function SessionSurface(props: SessionSurfaceProps) {
             </span>
           </div>
         ) : null}
-        {props.roleplayControls ? (
-          <>
-            {/* Regenerate and alternative navigation are not here: they act on a
-                reply, so they live in that message group's own action bar
-                alongside copy, branch, and revert. */}
-            <StorySoFar
-              value={props.roleplayControls.storySoFar}
-              saving={props.roleplayControls.storySaving}
-              compacted={props.roleplayControls.compacted}
-              memoryBusy={props.roleplayControls.memoryBusy}
-              revisionBusy={props.roleplayControls.revisionBusy}
-              onSave={props.roleplayControls.onSaveStorySoFar}
-              onExtractMemories={props.roleplayControls.onExtractMemories}
-              onProposeRevision={props.roleplayControls.onProposeRevision}
-            />
-          </>
+        {/* Regenerate and alternative navigation are not here: they act on a
+            reply, so they live in that message group's own action bar alongside
+            copy, branch, and revert. Everything session-level moved to the
+            settings panel; only this notice stays, because it explains why the
+            character just lost the middle of the conversation. */}
+        {props.roleplayControls?.compacted ? (
+          <p className="text-muted-foreground px-4 pb-1 text-xs">
+            This conversation was compacted. Anything the summary dropped survives only in the story so far.
+          </p>
         ) : null}
         <ReactSessionComposer
           draft={draft}
@@ -2357,6 +2374,48 @@ export function SessionSurface(props: SessionSurfaceProps) {
       </div>
       {/* Error display moved inline into the session conversation area */}
       {props.developerMode ? <SessionDebugPanel model={model} snapshot={snapshot} /> : null}
+    </div>
+    {/* Nothing at all when closed, not a collapsed rail: the toggle lives in the
+        session header, so a rail here would be a second affordance holding
+        width open in every roleplay conversation. */}
+    {props.roleplay && props.roleplayControls && props.roleplaySettingsOpen ? (
+        <aside className="border-dls-border flex h-full w-80 min-h-0 shrink-0 flex-col border-s">
+          <div className="border-dls-border flex items-center justify-between gap-2 border-b px-4 py-2">
+            <h2 className="text-sm font-medium">Conversation settings</h2>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Close conversation settings"
+              onClick={() => props.onRoleplaySettingsOpenChange?.(false)}
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+          {/* Stated here rather than per control: it is the one rule that makes
+              the panel behave differently from a settings screen. */}
+          <p className="text-muted-foreground border-dls-border border-b px-4 py-2 text-xs">
+            Changes apply to the next reply and to regenerating the one on screen.
+          </p>
+          <SessionSettingsPanel
+            characterName={props.roleplay.characterName}
+            personas={props.roleplayControls.personas}
+            personaId={props.roleplayControls.personaId}
+            onSelectPersona={props.roleplayControls.onSelectPersona}
+            lorebooks={props.roleplay.lorebooks}
+            settings={props.roleplay.settings}
+            onChangeSettings={props.roleplayControls.onChangeSettings}
+            saving={props.roleplayControls.storySaving}
+            diagnostics={props.roleplayControls.diagnostics}
+            storySoFar={props.roleplayControls.storySoFar}
+            memoryBusy={props.roleplayControls.memoryBusy}
+            revisionBusy={props.roleplayControls.revisionBusy}
+            onSaveStorySoFar={props.roleplayControls.onSaveStorySoFar}
+            onExtractMemories={props.roleplayControls.onExtractMemories}
+            onProposeRevision={props.roleplayControls.onProposeRevision}
+          />
+        </aside>
+    ) : null}
     </div>
     </DevProfiler>
   );

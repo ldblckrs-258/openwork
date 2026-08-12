@@ -32,8 +32,13 @@ import {
   type ResolvedWorkspaceEndpoint,
 } from "@/app/lib/workspace-endpoint";
 import { buildOpenworkEnvRuntimeKey } from "@/app/lib/openwork-env-runtime";
-import type { RoleplayBlock, RoleplayTurnRecord } from "@openwork/types/roleplay";
-import { buildRoleplayTurn } from "@/app/roleplay/turn";
+import type {
+  RoleplayBlock,
+  RoleplaySessionSettings,
+  RoleplayTurnRecord,
+} from "@openwork/types/roleplay";
+import { buildRoleplayTurn, type RoleplayTurn } from "@/app/roleplay/turn";
+import type { RoleplayTurnDiagnostics } from "@/react-app/domains/roleplay/components/session-settings-panel";
 import {
   applySwipeResult,
   createTurnId,
@@ -558,6 +563,11 @@ async function draftToParts(
   return parts;
 }
 
+/** What the settings panel reports about a send, taken from the turn that was actually built. */
+function turnDiagnostics(turn: RoleplayTurn): RoleplayTurnDiagnostics {
+  return { lorebook: turn.lorebook, systemChars: turn.composed.chars, truncated: turn.composed.truncated };
+}
+
 function singlePickedDirectory(selection: string | string[] | null) {
   return typeof selection === "string"
     ? selection
@@ -735,6 +745,16 @@ export function SessionRoute() {
    * greeting comes back and the user can chat.
    */
   const [greetingPendingSessionId, setGreetingPendingSessionId] = useState<string | null>(null);
+  /**
+   * What the last send put in the prompt, for the settings panel to report.
+   *
+   * In memory and scoped to one session: it describes a turn that has already
+   * happened, so persisting it would outlive the settings that produced it and
+   * describe a prompt the next send will not build.
+   */
+  const [roleplayDiagnostics, setRoleplayDiagnostics] = useState<
+    { sessionId: string; diagnostics: RoleplayTurnDiagnostics } | null
+  >(null);
   const roleplaySurface = useMemo<RoleplaySurfaceState | null>(() => {
     const binding = roleplayBindingQuery.data?.binding;
     const character = roleplayBindingQuery.data?.character;
@@ -750,6 +770,7 @@ export function SessionRoute() {
       memories: roleplayMemoriesQuery.data ?? [],
       greetingPending: greetingPendingSessionId === binding.sessionId,
       lorebooks: lorebooksForCharacter(roleplayLorebooksQuery.data ?? [], binding.characterId),
+      settings: binding.settings,
       characterId: binding.characterId,
     };
   }, [
@@ -1387,6 +1408,15 @@ export function SessionRoute() {
             onSelectAlternative: (offset: number) => handleRoleplaySelectAlternative(offset),
             onBranch: (messageId?: string) => void handleRoleplayBranch(messageId),
             onSaveStorySoFar: (value: string) => void handleSaveStorySoFar(value),
+            personas: roleplayPersonasQuery.data ?? [],
+            personaId: roleplayBindingQuery.data?.binding?.personaId ?? "",
+            onSelectPersona: (personaId: string) => void handleSelectRoleplayPersona(personaId),
+            onChangeSettings: (settings: RoleplaySessionSettings) =>
+              void handleChangeRoleplaySettings(settings),
+            diagnostics:
+              roleplayDiagnostics && roleplayDiagnostics.sessionId === selectedSessionId
+                ? roleplayDiagnostics.diagnostics
+                : null,
           }
         : null,
       developerMode: false,
@@ -1565,10 +1595,17 @@ export function SessionRoute() {
                       memories: roleplaySurface.memories,
                       lorebooks: roleplaySurface.lorebooks,
                       scanMessages,
+                      settings: roleplaySurface.settings,
                       directorText: draft.directorText,
                       envContext: envSystemContext ?? null,
                     })
                   : null;
+                if (roleplayTurn) {
+                  setRoleplayDiagnostics({
+                    sessionId: targetSessionId,
+                    diagnostics: turnDiagnostics(roleplayTurn),
+                  });
+                }
                 const result = await opencodeClient.session.promptAsync({
                   sessionID: targetSessionId,
                   parts,
@@ -2160,6 +2197,9 @@ export function SessionRoute() {
       personaId,
       storySoFar: "",
       greeting: opening.kind === "alternate" ? opening.text : "",
+      // Every field unset: a new conversation follows the app's defaults, and
+      // storing them here would freeze them at today's values.
+      settings: { disabledLorebookIds: [], systemPrompt: "" },
       boundAt: Date.now(),
     };
     await bindRoleplaySession.mutateAsync(binding);
@@ -2283,9 +2323,14 @@ export function SessionRoute() {
         // replayed: a regenerate has to match the same entries the original send
         // did, or the character loses world knowledge it just used.
         scanMessages: [...toScanMessages(existing ?? []), { role: "user" as const, text: plan.userText }],
+        // Live settings, not the ones the original send ran with: a change made
+        // in the panel is meant to be testable by regenerating the reply that
+        // prompted it.
+        settings: roleplaySurface.settings,
         directorText: compiled.directorText,
         envContext: envSystemContext ?? null,
       });
+      setRoleplayDiagnostics({ sessionId: selectedSessionId, diagnostics: turnDiagnostics(rebuilt) });
 
       const sessionModelSelection = getSessionModelSelection(selectedSessionId);
       // Same model *and* variant as an ordinary send. Dropping the variant here
@@ -2648,6 +2693,20 @@ export function SessionRoute() {
     const binding = roleplayBindingQuery.data?.binding;
     if (!binding) return;
     await bindRoleplaySession.mutateAsync({ ...binding, storySoFar: value });
+  }, [bindRoleplaySession, roleplayBindingQuery.data]);
+
+  const handleChangeRoleplaySettings = useCallback(async (settings: RoleplaySessionSettings) => {
+    const binding = roleplayBindingQuery.data?.binding;
+    if (!binding) return;
+    await bindRoleplaySession.mutateAsync({ ...binding, settings });
+  }, [bindRoleplaySession, roleplayBindingQuery.data]);
+
+  // Rebinding rather than a separate call: the persona is part of what makes a
+  // session a roleplay session, and the binding is the only record of it.
+  const handleSelectRoleplayPersona = useCallback(async (personaId: string) => {
+    const binding = roleplayBindingQuery.data?.binding;
+    if (!binding || binding.personaId === personaId) return;
+    await bindRoleplaySession.mutateAsync({ ...binding, personaId });
   }, [bindRoleplaySession, roleplayBindingQuery.data]);
 
   // Latest session-list state for prev/next session tab navigation. The

@@ -3,6 +3,7 @@ import type {
   RoleplayLorebookRecord,
   RoleplayMemoryRecord,
   RoleplayPersona,
+  RoleplaySessionSettings,
 } from "@openwork/types/roleplay";
 
 import { compilePrompt } from "./compile-prompt.js";
@@ -11,6 +12,7 @@ import { selectLorebookEntries, type LorebookScanMessage, type LorebookSelection
 import { substituteMacros } from "./macros.js";
 import { selectMemories } from "./memory.js";
 import { roleplayPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
+import { activeLorebooks, resolveSessionSettings } from "./session-settings.js";
 
 export type RoleplayTurnInput = {
   card: CharacterCardV2;
@@ -34,6 +36,15 @@ export type RoleplayTurnInput = {
    * just typed has to fire for the reply to that message, not for the one after.
    */
   scanMessages?: LorebookScanMessage[];
+  /**
+   * This conversation's own configuration.
+   *
+   * Read live rather than snapshotted per turn, so a change made mid-scene
+   * applies to the next send *and* to a regenerate of the reply already on
+   * screen. Two alternatives of one turn can therefore differ by more than the
+   * model's sampling.
+   */
+  settings?: RoleplaySessionSettings;
   envContext: string | null | undefined;
 };
 
@@ -69,14 +80,27 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
   // Budgeted here rather than inside `compilePrompt`: the compiler takes already
   // chosen injections and ranks them against the lorebook, so deciding *which*
   // memories are candidates has to happen before it sees them.
-  const memories = selectMemories(input.memories ?? []).injections;
-  const lorebook = selectLorebookEntries(input.lorebooks ?? [], input.scanMessages ?? []);
+  const settings = resolveSessionSettings(input.settings);
+  const memories = selectMemories(input.memories ?? [], settings.memoryBudgetChars).injections;
+  const lorebook = selectLorebookEntries(
+    activeLorebooks(input.lorebooks ?? [], settings.disabledLorebookIds),
+    input.scanMessages ?? [],
+    {
+      budgetChars: settings.lorebookBudgetChars,
+      ...(settings.scanDepth === undefined ? {} : { scanDepth: settings.scanDepth }),
+    },
+  );
   const characterPrompt = [
     compilePrompt(input.card, input.persona, {
       ...(input.charName ? { charName: input.charName } : {}),
       lorebookBefore: lorebook.before,
       lorebook: lorebook.after,
       memories,
+      systemPromptOverride: settings.systemPrompt,
+      // The two sources have already been cut to their own budgets, so the
+      // shared pass exists only to keep the sum from being re-cut against a
+      // ceiling the user has overridden.
+      budgetChars: settings.memoryBudgetChars + settings.lorebookBudgetChars,
     }),
     input.greeting ? openingLine(input.greeting, char, user) : "",
     // After the story so far, because it describes where the scene has got to

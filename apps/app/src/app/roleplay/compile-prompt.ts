@@ -53,6 +53,14 @@ export type CompilePromptOptions = {
   charName?: string;
   defaultSystemPrompt?: string;
   /**
+   * Replaces the card's `system_prompt` for one conversation.
+   *
+   * Empty leaves the card's field, and the app default behind it, in force.
+   * `{{original}}` still expands to the app default here, so a user rewriting the
+   * instruction can keep it rather than having to retype it.
+   */
+  systemPromptOverride?: string;
+  /**
    * Matched entries whose `position` is `before_char`, which the V2 spec places
    * ahead of the character definition rather than after it.
    */
@@ -109,8 +117,9 @@ export function compilePrompt(
   const appDefault = options.defaultSystemPrompt ?? DEFAULT_ROLEPLAY_SYSTEM_PROMPT;
   const examples = splitExampleMessages(data.mes_example).map((example) => expand(example)).filter(Boolean);
 
+  const override = options.systemPromptOverride?.trim() ?? "";
   const sections: Record<PromptSection, string> = {
-    system_prompt: expand(data.system_prompt, { ...macros, original: appDefault }) || appDefault,
+    system_prompt: expand(override || data.system_prompt, { ...macros, original: appDefault }) || appDefault,
     lorebook_before: block("# World Info", keptBefore.map((entry) => expand(entry)).join("\n\n").trim()),
     description: block(`# ${char}`, expand(data.description)),
     personality: block("## Personality", expand(data.personality)),

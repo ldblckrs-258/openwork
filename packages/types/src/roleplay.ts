@@ -175,6 +175,40 @@ export const roleplayPersonaRecordSchema = z.object({
 })
 export type RoleplayPersonaRecord = z.infer<typeof roleplayPersonaRecordSchema>
 
+/**
+ * Per-conversation overrides for how a turn is built.
+ *
+ * Every field is optional and `undefined` means "use the app's default", so the
+ * defaults stay in one place — the app layer that owns them — rather than being
+ * copied into every stored binding, where they would freeze at whatever they
+ * were the day the session started.
+ *
+ * These apply to a regenerate as well as to a send. A conversation therefore has
+ * one live configuration rather than a per-turn one, which means two swipe
+ * alternatives of the same turn may have been generated under different settings.
+ */
+export const roleplaySessionSettingsSchema = z.object({
+  /** Characters of prompt the memories may occupy. */
+  memoryBudgetChars: looseNumber,
+  /** Characters of prompt the matched lorebook entries may occupy. */
+  lorebookBudgetChars: looseNumber,
+  /** Overrides every attached book's own scan depth. */
+  scanDepth: looseNumber,
+  /**
+   * Books switched off for this conversation only.
+   *
+   * Stored as the ids that are off rather than the ids that are on: a book
+   * attached to the character after this session started is then live by
+   * default, which matches what attaching one means.
+   */
+  disabledLorebookIds: looseStringArray,
+  /** Replaces the card's `system_prompt`, and the app default behind it. Empty means neither. */
+  systemPrompt: looseString,
+  /** False turns off speech/action/OOC colouring in this conversation's transcript. */
+  colorSegments: looseBoolean,
+})
+export type RoleplaySessionSettings = z.infer<typeof roleplaySessionSettingsSchema>
+
 export const roleplaySessionBindingSchema = z.object({
   sessionId: idString,
   characterId: idString,
@@ -196,6 +230,12 @@ export const roleplaySessionBindingSchema = z.object({
    * conversation deserves its own opening without overwriting the author's.
    */
   greeting: looseString,
+  /**
+   * Absent on every binding written before settings existed, which is why the
+   * whole object falls back rather than each field: a binding that failed to
+   * parse would unbind a live conversation from its character.
+   */
+  settings: roleplaySessionSettingsSchema.catch({ disabledLorebookIds: [], systemPrompt: "" }),
   boundAt: timestamp,
 })
 export type RoleplaySessionBinding = z.infer<typeof roleplaySessionBindingSchema>

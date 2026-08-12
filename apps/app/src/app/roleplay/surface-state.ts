@@ -3,6 +3,7 @@ import type {
   RoleplayLorebookRecord,
   RoleplayMemoryRecord,
   RoleplayPersona,
+  RoleplaySessionSettings,
 } from "@openwork/types/roleplay";
 
 /**
@@ -36,8 +37,14 @@ export type RoleplaySurfaceState = {
    * against it would start the scene twice.
    */
   greetingPending: boolean;
-  /** Lorebooks attached to this character; matched against the transcript each turn. */
+  /**
+   * Every lorebook attached to this character, including ones this conversation
+   * has switched off. The settings panel needs the switched-off ones to offer
+   * them back; `buildRoleplayTurn` does the filtering.
+   */
   lorebooks: RoleplayLorebookRecord[];
+  /** This conversation's overrides, unresolved: `undefined` still means "app default". */
+  settings: RoleplaySessionSettings;
   /** Which character the session is bound to, so a memory approved mid-chat knows where to go. */
   characterId: string;
 };

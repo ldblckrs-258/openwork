@@ -2,7 +2,7 @@
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePanelRef } from "react-resizable-panels";
-import { Cloud, FileText, Globe, Mic2, PanelRight, TextSearch, Zap } from "lucide-react";
+import { Cloud, Drama, FileText, Globe, Mic2, PanelRight, TextSearch, Zap } from "lucide-react";
 
 import { resolveExtensionIconSrc } from "@/react-app/design-system/extension-icon-src";
 import { t } from "../../../../i18n";
@@ -788,6 +788,12 @@ export function SessionPage(props: SessionPageProps) {
   const providerCount = props.hasUsableModel ? 1 : props.providerConnectedIds.length;
   const messageCountVisible = props.selectedSessionId ? 1 : 0;
   const hasMainContentTakeover = Boolean(props.mainContentTakeover);
+  /**
+   * Closed by default: the panel is for a conversation someone is already
+   * having, not a step on the way into one. Held here rather than in the
+   * surface because its toggle is in the header.
+   */
+  const [roleplaySettingsOpen, setRoleplaySettingsOpen] = useState(false);
   const showWorkspaceSetupEmptyState = props.workspaces.length === 0 && !props.selectedSessionId;
   const showStartupSkeleton =
     !bootOverlayVisible &&
@@ -1112,6 +1118,32 @@ export function SessionPage(props: SessionPageProps) {
 
             <div className="flex items-center gap-1.5 text-gray-10 mac:titlebar-no-drag">
               {/* Revert/redo moved to per-message actions */}
+              {props.surface?.roleplay && !hasMainContentTakeover ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className={cn(
+                          "rounded-xl text-gray-10 transition-colors hover:bg-muted hover:text-foreground",
+                          roleplaySettingsOpen && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                        )}
+                        aria-label={
+                          roleplaySettingsOpen ? "Close conversation settings" : "Open conversation settings"
+                        }
+                        aria-pressed={roleplaySettingsOpen}
+                        onClick={() => setRoleplaySettingsOpen((open) => !open)}
+                      >
+                        <Drama size={16} />
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>
+                    {roleplaySettingsOpen ? "Close conversation settings" : "Conversation settings"}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
               {!props.primarySlot && findButtonSessionId && !hasMainContentTakeover ? (
                 <Tooltip>
                   <TooltipTrigger
@@ -1290,6 +1322,8 @@ export function SessionPage(props: SessionPageProps) {
                         respondQuestion={props.respondQuestion}
                         safeStringify={props.safeStringify}
                         onOpenTarget={openTarget}
+                        roleplaySettingsOpen={roleplaySettingsOpen}
+                        onRoleplaySettingsOpenChange={setRoleplaySettingsOpen}
                       />
                     </ResizablePanel>
                     {canRenderSplitSurface ? (

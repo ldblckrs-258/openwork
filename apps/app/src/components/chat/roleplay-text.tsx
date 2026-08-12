@@ -13,6 +13,14 @@ import { cn } from "@/lib/utils"
 export interface RoleplayRenderContext {
   charName: string
   userName: string
+  /**
+   * False renders every segment in the body colour.
+   *
+   * Segmentation still runs, because macro substitution and the plain-text
+   * (rather than markdown) treatment are what make roleplay prose readable at
+   * all; only the colours are dropped.
+   */
+  colorSegments: boolean
 }
 
 const SEGMENT_CLASS: Record<RoleplaySegmentKind, string> = {
@@ -58,7 +66,7 @@ export function RoleplayText({
   return (
     <p className={cn("whitespace-pre-wrap", className)}>
       {segments.map((segment, index) => {
-        const classes = SEGMENT_CLASS[segment.kind]
+        const classes = context.colorSegments ? SEGMENT_CLASS[segment.kind] : ""
         return classes ? (
           <span key={index} className={classes}>
             {segment.text}
