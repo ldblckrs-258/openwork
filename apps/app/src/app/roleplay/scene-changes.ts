@@ -1,5 +1,7 @@
 import type { RoleplaySceneChangeRecord } from "@openwork/types/roleplay";
 
+import { SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX } from "../types";
+
 export const MAX_RENDERED_SCENE_CHANGES = 8;
 
 export type SceneChangePart = {
@@ -92,27 +94,37 @@ function isVisible(message: SceneChangeMessage, toolName: string): boolean {
   );
 }
 
+function isSessionError(message: SceneChangeMessage): boolean {
+  return message.id.startsWith(SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX);
+}
+
 export function sceneChangesByMessage(
   messages: SceneChangeMessage[],
   toolName: string,
 ): Map<string, RoleplaySceneChangeRecord[]> {
   const byMessage = new Map<string, RoleplaySceneChangeRecord[]>();
   let pending: RoleplaySceneChangeRecord[] = [];
+  let anchor: string | null = null;
+
+  const flush = () => {
+    if (anchor !== null && pending.length > 0) {
+      const latest = new Map(pending.map((record) => [record.id, record]));
+      byMessage.set(anchor, [...latest.values()]);
+    }
+    pending = [];
+    anchor = null;
+  };
 
   for (const message of messages) {
-    if (message.role === "user") {
-      pending = [];
+    if (message.role !== "assistant") {
+      flush();
       continue;
     }
-    if (message.role !== "assistant") continue;
 
     pending = [...pending, ...changesInMessage(message, toolName)];
-    if (pending.length === 0 || !isVisible(message, toolName)) continue;
-
-    const latest = new Map(pending.map((record) => [record.id, record]));
-    byMessage.set(message.id, [...latest.values()]);
-    pending = [];
+    if (isVisible(message, toolName) && !isSessionError(message)) anchor = message.id;
   }
+  flush();
 
   return byMessage;
 }
