@@ -38,6 +38,9 @@ function character(overrides: Partial<RoleplayCharacterRecord> = {}): RoleplayCh
     charSubstitutionName: "Aria",
     source: "authored",
     attachedSkills: [],
+    nsfw: false,
+    sceneRecords: [],
+    hardLimits: [],
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
@@ -82,8 +85,6 @@ describe("what a model may revise", () => {
   });
 
   test("neither name nor the opening line can be revised", () => {
-    // Identity and the scene's first line are the user's, not something play
-    // establishes.
     const parsed = parseRevisionProposals(
       response([
         { field: "name", value: "Someone Else", why: "" },
@@ -96,8 +97,6 @@ describe("what a model may revise", () => {
   });
 
   test("a proposal identical to what is already there is dropped", () => {
-    // Reviewing a no-op teaches users to approve without reading, which is the
-    // exact habit this feature cannot afford.
     const parsed = parseRevisionProposals(
       response([{ field: "personality", value: "  warm, talkative  ", why: "no change" }]),
       CARD,
@@ -120,8 +119,6 @@ describe("what a model may revise", () => {
   });
 
   test("an empty change list is a valid answer", () => {
-    // Most conversations do not warrant a card edit, and a feature that always
-    // finds something becomes nagging.
     const parsed = parseRevisionProposals(response([]), CARD);
 
     expect(parsed.ok).toBe(true);
@@ -154,8 +151,6 @@ describe("what a model may revise", () => {
 
 describe("applying a revision", () => {
   test("approving nothing leaves the card byte-identical and writes no history", () => {
-    // The user's escape hatch. If "discard all" could still touch the card, the
-    // review would not be a review.
     const before = character();
     const result = applyRevision({
       character: before,
@@ -171,8 +166,6 @@ describe("applying a revision", () => {
   });
 
   test("only approved fields change", () => {
-    // Per-field is the point: a proposal that gets one field right and another
-    // wrong is the common case, and all-or-nothing would lose the good half.
     const result = applyRevision({
       character: character(),
       proposals: [proposal(), proposal({ field: "scenario", before: CARD.data.scenario, after: "A locked archive." })],
@@ -189,8 +182,6 @@ describe("applying a revision", () => {
   });
 
   test("the revision stores the card as it was, not as it became", () => {
-    // Rollback is then a copy rather than an inverse diff — the operation most
-    // likely to be subtly wrong at the moment it is needed.
     const result = applyRevision({
       character: character(),
       proposals: [proposal()],
@@ -206,8 +197,6 @@ describe("applying a revision", () => {
   });
 
   test("a revised card is marked as revised", () => {
-    // Matters most for imported cards: once revised, one no longer represents its
-    // original author's work.
     const result = applyRevision({
       character: character({ source: "imported" }),
       proposals: [proposal()],
@@ -280,8 +269,6 @@ describe("undo", () => {
   });
 
   test("undoing records its own history entry rather than deleting one", () => {
-    // The history is a record of what happened, not of what is currently
-    // believed. An undo that erased its own cause would make the log a lie.
     const applied = applyRevision({
       character: character(),
       proposals: [proposal()],
@@ -304,8 +291,6 @@ describe("undo", () => {
   });
 
   test("a rolled-back card is still marked as revised", () => {
-    // It has been through the user's hands either way, so nothing downstream may
-    // present it as the original author's untouched work.
     const applied = applyRevision({
       character: character({ source: "imported" }),
       proposals: [proposal()],
@@ -323,8 +308,6 @@ describe("undo", () => {
 
 describe("drift", () => {
   test("the comparison is against the original card, not the previous one", () => {
-    // Drift compounds one reasonable-looking step at a time. Comparing against
-    // the last revision would show each step as small and never show the total.
     const original = character();
     const step1 = applyRevision({
       character: original,
@@ -370,9 +353,6 @@ describe("the proposal call", () => {
   });
 
   test("director notes are sent as their own labelled section", () => {
-    // They never went into message history — they were split into `system` at
-    // send time — and a note buried among a hundred lines of dialogue reads to
-    // the model as one more line of dialogue.
     const request = buildRevisionRequest({
       card: CARD,
       directorNotes: ["be colder", "she has never met him"],
@@ -386,8 +366,6 @@ describe("the proposal call", () => {
   });
 
   test("with no director notes the section is left out rather than sent empty", () => {
-    // An empty "the user corrected you" heading invites the model to invent
-    // corrections to fill it.
     const request = buildRevisionRequest({ card: CARD, directorNotes: [], transcript: "Aria: You're late." });
 
     expect(request.text).not.toContain("Director notes");
@@ -402,9 +380,6 @@ describe("the proposal call", () => {
   });
 
   test("the prompt document names director notes as the strongest signal", () => {
-    // The weighting lives in the document, so it is the document this asserts.
-    // If someone rewrites it without that instruction, proposals silently start
-    // treating inference and testimony alike.
     expect(revisePrompt).toContain("Director notes outrank everything else");
   });
 });

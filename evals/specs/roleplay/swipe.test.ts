@@ -27,9 +27,6 @@ function turn(overrides: Partial<RoleplayTurnRecord> = {}): RoleplayTurnRecord {
 
 describe("planning a regenerate", () => {
   test("the current reply is captured into the plan, before any revert is issued", () => {
-    // The engine destroys the reverted reply the moment the next prompt is
-    // dispatched, so a reply not copied first is gone from everywhere. Making
-    // the capture part of the plan is what forces the ordering on the caller.
     const plan = planSwipe({
       turn: turn(),
       currentReply: { text: "She says nothing.", messageId: "msg_reply_1" },
@@ -42,8 +39,6 @@ describe("planning a regenerate", () => {
   });
 
   test("the revert targets the reply, not the user message", () => {
-    // The engine normalises this to the preceding user message itself; passing
-    // the user message id instead would revert one turn too far.
     const plan = planSwipe({
       turn: turn(),
       currentReply: { text: "Mm.", messageId: "msg_reply_1" },
@@ -54,8 +49,6 @@ describe("planning a regenerate", () => {
   });
 
   test("the original user text is carried so the re-prompt does not blank the message", () => {
-    // `parts: []` is accepted by the engine and produces an empty user message,
-    // silently discarding what the user actually wrote.
     const plan = planSwipe({
       turn: turn({ userText: '*leans in*\n"Well?"' }),
       currentReply: { text: "Mm.", messageId: "msg_reply_1" },
@@ -76,8 +69,6 @@ describe("planning a regenerate", () => {
 
 describe("after a regenerate", () => {
   test("the turn follows the engine's new message ids", () => {
-    // Both ids change on every regenerate. A turn still pointing at the old user
-    // message would revert at a message that no longer exists on the next swipe.
     const next = applySwipeResult(turn({ alternatives: [{ text: "A", messageId: "msg_a", createdAt: 1 }], activeAlternative: 1 }), {
       userMessageId: "msg_user_2",
       replyText: "B",
@@ -102,30 +93,27 @@ describe("navigating alternatives", () => {
       activeAlternative: 2,
     });
 
-    expect(activeAlternativeText(selectAlternative(withThree, -1))).toBe("B");
-    expect(activeAlternativeText(selectAlternative(selectAlternative(withThree, -1), -1))).toBe("A");
+    expect(activeAlternativeText(selectAlternative(withThree, -1).turn)).toBe("B");
+    expect(activeAlternativeText(selectAlternative(selectAlternative(withThree, -1).turn, -1).turn)).toBe("A");
   });
 
   test("navigation clamps rather than running off either end", () => {
     const one = turn({ alternatives: [{ text: "A", messageId: "a", createdAt: 1 }], activeAlternative: 0 });
 
-    expect(selectAlternative(one, -1)).toBe(one);
-    expect(selectAlternative(one, 1)).toBe(one);
+    expect(selectAlternative(one, -1)).toEqual({ turn: one, changed: false, restore: undefined });
+    expect(selectAlternative(one, 1)).toEqual({ turn: one, changed: false, restore: undefined });
   });
 
   test("a turn with no captured alternatives cannot be navigated", () => {
     const bare = turn();
 
-    expect(selectAlternative(bare, 1)).toBe(bare);
+    expect(selectAlternative(bare, 1).changed).toBe(false);
     expect(activeAlternativeText(bare)).toBeUndefined();
   });
 });
 
 describe("a failed regenerate", () => {
   test("the previous reply is restored from the app-side copy", () => {
-    // `unrevert()` cannot do this. The engine already destroyed the messages and
-    // cleared the cursor before the failure surfaced, so there is nothing on the
-    // server left to restore and nothing for a cursor snapshot to point at.
     const repair = repairAfterFailedSwipe(
       turn({ alternatives: [{ text: "She says nothing.", messageId: "msg_a", createdAt: 1 }] }),
     );
@@ -142,9 +130,6 @@ describe("a failed regenerate", () => {
   });
 
   test("the repaired turn points at a reply that exists", () => {
-    // `planSwipe` parks the index one past the captured replies so the incoming
-    // live reply renders. When it never arrives, leaving the index there shows
-    // the raw transcript under a counter claiming an archived reply is on screen.
     const planned = planSwipe({
       turn: turn(),
       currentReply: { text: "She says nothing.", messageId: "msg_a" },
@@ -163,9 +148,6 @@ describe("a failed regenerate", () => {
   });
 
   test("the failure path must read the planned turn, not the one it started from", () => {
-    // The capture is already persisted by the time anything can fail. Reporting
-    // from the pre-swipe turn tells the user their reply is unrecoverable while
-    // a copy of it sits in the store.
     const before = turn();
     const planned = planSwipe({
       turn: before,
@@ -180,9 +162,6 @@ describe("a failed regenerate", () => {
 
 describe("director replay", () => {
   test("a regenerated turn recomposes the same system string as the original", () => {
-    // Director text lives in `system`, never in history, so a regenerate that
-    // did not recompose it would silently drop steering the user just gave —
-    // which reads as the model disobeying rather than as a bug.
     const card = characterCardV2Schema.parse({
       spec: "chara_card_v2",
       spec_version: "2.0",

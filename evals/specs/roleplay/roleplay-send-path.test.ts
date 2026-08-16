@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { characterCardV2Schema } from "../../../packages/types/src/roleplay.ts";
 import { buildRoleplayTurn } from "../../../apps/app/src/app/roleplay/turn.ts";
 import { composeSystem, COMBINED_SYSTEM_BUDGET_CHARS, SYSTEM_SECTION_DELIMITER } from "../../../apps/app/src/app/roleplay/compose-system.ts";
-import { ROLEPLAY_AGENT, toolMapGrantsAccess } from "../../../apps/app/src/app/roleplay/prompt-options.ts";
+import { ROLEPLAY_AGENT, ROLEPLAY_STATE_TOOL, toolMapGrantsOnly } from "../../../apps/app/src/app/roleplay/prompt-options.ts";
 
 const ENV_CONTEXT = "<openwork-env>workspace: /tmp/demo</openwork-env>";
 
@@ -23,9 +23,6 @@ const persona = { name: "Wren", description: "A courier with a forged pass." };
 
 describe("system composition", () => {
   test("the environment context is composed onto, never replaced", () => {
-    // Every send in the app carries this string, and it is built outside the
-    // roleplay compiler — replacing it would strip context the rest of the app
-    // assumes is present.
     const turn = buildRoleplayTurn({ card: card(), persona, envContext: ENV_CONTEXT });
 
     expect(turn.prompt.system).toContain(ENV_CONTEXT);
@@ -41,8 +38,6 @@ describe("system composition", () => {
   });
 
   test("director text lands in system, last, and nowhere near the message", () => {
-    // The engine puts the whole `system` string ahead of all chat history, so
-    // "last within system" is the closest to the conversation it can get.
     const turn = buildRoleplayTurn({
       card: card(),
       persona,
@@ -56,8 +51,6 @@ describe("system composition", () => {
   test("the combined ceiling drops the environment context before the character", () => {
     // A roleplay send denies every tool, so the workspace description cannot be
     // acted on; losing the character prompt would lose the character.
-    // Sized so the character prompt fits alone but not alongside the
-    // environment context, which is exactly the case the priority decides.
     const huge = "x".repeat(COMBINED_SYSTEM_BUDGET_CHARS - 40);
     const composed = composeSystem({ envContext: ENV_CONTEXT, characterPrompt: huge, directorText: "be brief" });
 
@@ -68,8 +61,6 @@ describe("system composition", () => {
   });
 
   test("a character prompt that alone exceeds the ceiling is truncated, not sent whole", () => {
-    // Without a combined check here nothing enforces a ceiling at all: the
-    // compiler's own budget never sees the environment string.
     const composed = composeSystem({
       envContext: null,
       characterPrompt: "y".repeat(COMBINED_SYSTEM_BUDGET_CHARS * 2),
@@ -83,11 +74,11 @@ describe("system composition", () => {
 });
 
 describe("the denial boundary on the send path", () => {
-  test("every roleplay turn pins the agent and denies every tool", () => {
+  test("every roleplay turn pins the agent and carries exactly the scene-state tool", () => {
     const turn = buildRoleplayTurn({ card: card(), persona, envContext: ENV_CONTEXT });
 
     expect(turn.prompt.agent).toBe(ROLEPLAY_AGENT);
-    expect(toolMapGrantsAccess(turn.prompt.tools)).toBe(false);
+    expect(toolMapGrantsOnly(turn.prompt.tools, [ROLEPLAY_STATE_TOOL])).toBe(true);
   });
 
   test("the pin is unconditional, so a saved agent preference cannot reach the wire", () => {
@@ -104,11 +95,12 @@ describe("the denial boundary on the send path", () => {
     expect(wire.agent).toBe(ROLEPLAY_AGENT);
   });
 
-  test("attaching skills injects text and grants nothing", () => {
+  test("attaching skills injects text and grants no extra tool", () => {
     // "Attach a skill" reads like "the character can now use skills". It cannot:
     // this is context injection, and the `skill` tool stays denied. Adding
     // `skill: true` to the tool map as an obvious completion has to fail a test
-    // rather than pass review.
+    // rather than pass review — which is why this asserts the exact set rather
+    // than a count, now that the turn legitimately carries one tool.
     const turn = buildRoleplayTurn({
       card: card(),
       persona,
@@ -118,7 +110,7 @@ describe("the denial boundary on the send path", () => {
 
     expect(turn.prompt.system).toContain("Let scenes breathe.");
     expect(turn.prompt.agent).toBe(ROLEPLAY_AGENT);
-    expect(toolMapGrantsAccess(turn.prompt.tools)).toBe(false);
+    expect(toolMapGrantsOnly(turn.prompt.tools, [ROLEPLAY_STATE_TOOL])).toBe(true);
   });
 });
 
@@ -142,9 +134,6 @@ describe("attached skills on a turn", () => {
   });
 
   test("everything dropped, truncated, unresolved, or shadowed reaches the turn", () => {
-    // The selection is not an internal detail: it travels to
-    // `RoleplayTurnDiagnostics`, or the reporting requirement is satisfied into
-    // a value nothing reads.
     const turn = buildRoleplayTurn({
       card: card(),
       persona,
@@ -164,9 +153,6 @@ describe("attached skills on a turn", () => {
 
 describe("the greeting", () => {
   test("the compiled prompt tells the model what it opened with", () => {
-    // The engine cannot store an assistant message, so the greeting is rendered
-    // by the client. Without this the model has no record of having spoken and
-    // the first reply reads as if the scene had not started.
     const turn = buildRoleplayTurn({
       card: card(),
       persona,

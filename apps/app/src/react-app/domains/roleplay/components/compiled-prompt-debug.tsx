@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 import * as React from "react";
 import { Copy } from "lucide-react";
-import type { RoleplayPersona } from "@openwork/types/roleplay";
+import type { RoleplayPersona, RoleplaySceneState } from "@openwork/types/roleplay";
 import type { RoleplayCharacterRecord } from "@openwork/types/roleplay";
 
 import { Button } from "@/components/ui/button";
@@ -12,32 +12,19 @@ import type { SkillInjection } from "@/app/roleplay/skills-injection";
 type CompiledPromptDebugProps = {
   character: RoleplayCharacterRecord;
   persona: RoleplayPersona;
-  /**
-   * The attached skill bodies that survived the budget, already selected.
-   *
-   * Passed in rather than resolved here so this stays a view of the compiler:
-   * the same selection the turn will make, not a second one that could disagree
-   * with it.
-   */
   skills?: SkillInjection[];
+  sceneState?: RoleplaySceneState;
 };
 
-/**
- * Shows exactly the string the compiler produces for this character and persona.
- *
- * "This character feels wrong" is the most likely quality failure and the hardest
- * to attribute — composition order is a decision this app made, not a spec, and
- * a card authored against another app may land differently here. Without this
- * view the only way to debug that is guesswork about text the user never sees.
- */
-export function CompiledPromptDebug({ character, persona, skills }: CompiledPromptDebugProps) {
+export function CompiledPromptDebug({ character, persona, skills, sceneState }: CompiledPromptDebugProps) {
   const compiled = React.useMemo(
     () =>
       compilePrompt(character.card, persona, {
         charName: character.charSubstitutionName || undefined,
         skills: skills ?? [],
+        ...(sceneState ? { sceneState } : {}),
       }),
-    [character, persona, skills],
+    [character, persona, skills, sceneState],
   );
 
   return (

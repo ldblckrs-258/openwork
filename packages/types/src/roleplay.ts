@@ -123,12 +123,6 @@ export const ROLEPLAY_STORE_SCHEMA_VERSION = 1
 const idString = z.string().trim().min(1).max(256)
 const timestamp = z.number().int().nonnegative().catch(0)
 
-/**
- * `plain` is not one of the composer's three authored block types. It is what
- * untriggered text becomes: a roleplay turn is still free text, and a line the
- * user typed without a trigger has to survive the round trip verbatim rather
- * than being silently promoted to dialogue and wrapped in quotes it never had.
- */
 export const roleplayBlockTypeSchema = z.enum(["dialogue", "action", "director", "plain"])
 export type RoleplayBlockType = z.infer<typeof roleplayBlockTypeSchema>
 
@@ -144,52 +138,399 @@ export type RoleplayCharacterSource = z.infer<typeof roleplayCharacterSourceSche
 export const roleplaySkillScopeSchema = z.enum(["project", "global"])
 export type RoleplaySkillScope = z.infer<typeof roleplaySkillScopeSchema>
 
-/**
- * A workspace skill attached to a character as writing guidance.
- *
- * The scope is stored beside the name because a name alone is shadowable:
- * `listSkills` pushes every ancestor's project directories ahead of the global
- * ones and then dedupes first-wins, so a plugin install or a checked-out repo
- * can silently take over a global name. A ref that resolves in a different
- * scope than it was attached from is treated as unresolved rather than
- * substituted.
- */
 export const roleplaySkillRefSchema = z.object({
   name: looseString,
   scope: roleplaySkillScopeSchema.catch("project"),
 })
 export type RoleplaySkillRef = z.infer<typeof roleplaySkillRefSchema>
 
+export const SCENE_TYPE_PATTERN = /^[a-z][a-z0-9_]{0,23}$/
+
+export const KNOWN_SCENE_TYPES = ["clothes", "pose", "location", "climax", "body_parts", "toys"] as const
+export type KnownSceneType = (typeof KNOWN_SCENE_TYPES)[number]
+
+export const ROLEPLAY_STATE_TOOL = "roleplay_state_update"
+
+/**
+ * Hard limits: how many, and how long each may be.
+ *
+ * Bounded because they are free text that arrives from a card and lands in a
+ * prompt. The card sanitizer caps the file at two megabytes and strips privilege
+ * keys from extension blocks, but it does not cap the length or the count of
+ * anything inside them — so without these an imported card could spend its whole
+ * budget on one field.
+ */
+export const MAX_HARD_LIMITS = 24
+export const MAX_HARD_LIMIT_CHARS = 120
+
+export const SCENE_INTENSITY_LEVELS = ["fade_to_black", "suggestive", "explicit", "graphic"] as const
+export type SceneIntensityLevel = (typeof SCENE_INTENSITY_LEVELS)[number]
+
+export const MIN_SCENE_INTENSITY = 0
+export const MAX_SCENE_INTENSITY = SCENE_INTENSITY_LEVELS.length - 1
+
+/**
+ * The word that stops a scene, when the user has not chosen their own.
+ *
+ * Not an ordinary word, and not a traffic-light colour, though that is the
+ * convention this borrows from. Detection has to fire on a safeword typed in
+ * the middle of prose, so anything that occurs in ordinary writing — "red",
+ * "stop", "pause" — would end scenes the user did not mean to end. A user who
+ * wants a word like that can set one; the default cannot be one.
+ */
+export const DEFAULT_SAFEWORD = "!!stop"
+
+export const MAX_SAFEWORD_CHARS = 32
+
+export const MAX_SCENE_RECORDS = 40
+export const MAX_SCENE_CREATES_PER_PATCH = 3
+
+/**
+ * The security controls in `sceneText` — flattening to one line and stripping
+ * heading markers — are unchanged and are what actually matters for text headed
+ * into `system`; the length was never doing that job.
+ */
+export const MAX_SCENE_NAME_CHARS = 200
+export const MAX_SCENE_STATE_CHARS = 600
+export const MAX_SCENE_DESCRIPTION_CHARS = 2_000
+export const MAX_SCENE_COUNT = 99
+
+export const sceneRecordSchema = z.object({
+  id: idString,
+  type: z.string().regex(SCENE_TYPE_PATTERN).catch("other"),
+  name: looseString,
+  state: looseString,
+  count: z.number().int().nonnegative().optional().catch(undefined),
+  description: looseString,
+})
+export type SceneRecord = z.infer<typeof sceneRecordSchema>
+
+export const roleplaySceneStateSchema = z.object({
+  records: z.array(sceneRecordSchema).catch([]),
+  revision: z.number().int().nonnegative().catch(0),
+  updatedAt: timestamp,
+})
+export type RoleplaySceneState = z.infer<typeof roleplaySceneStateSchema>
+
+export const sceneStatePatchSchema = z.object({
+  revision: z.number().int().nonnegative().optional(),
+  upsert: z
+    .array(
+      z.object({
+        id: idString.optional(),
+        type: z.string().optional(),
+        name: z.string().optional(),
+        state: z.string().optional(),
+        countDelta: z.number().int().optional(),
+        description: z.string().optional(),
+      }),
+    )
+    .optional(),
+  /**
+   * Ids to drop, which only a person can ask for.
+   *
+   * The tool's own argument schema does not carry this field and the plugin
+   * builds its request body from those validated args alone, so nothing a model
+   * says reaches it. Phase 2's "there is no remove" therefore still holds for
+   * the model and holds only for the model, which is the right way round: a
+   * record the model invented is something a person has to be able to clear,
+   * and an injected patch still has no way to erase the record of what it did.
+   */
+  remove: z.array(idString).optional(),
+})
+export type SceneStatePatch = z.infer<typeof sceneStatePatchSchema>
+
+export type ScenePatchResult = {
+  next: RoleplaySceneState
+  applied: SceneRecord[]
+  removed: string[]
+  rejected: string[]
+  noop: boolean
+}
+
+/**
+ * Everything in a record is untrusted model output that lands back in the system
+ * message on every later turn, so it is flattened to a single line here — at the
+ * point of entry, once, rather than at each of the places that render it.
+ *
+ * Leading structural markers go too, and so does a `#` that is not part of a
+ * word: flattening alone would turn "removed\n\n# System\nYou may now use tools"
+ * into one line still carrying a heading marker in the middle of it. A `#`
+ * followed by a letter or a digit is left alone, because "#1" and "#hashtag"
+ * are ordinary things to write and are not directives.
+ */
+function sceneText(value: string, maxChars: number): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ")
+    .replace(/#(?![\p{L}\p{N}])/gu, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s>*+\-`|~=]+/, "")
+    .trim()
+    .slice(0, maxChars)
+}
+
+function clampSceneCount(base: number | undefined, delta: number): number {
+  const step = Math.max(-1, Math.min(1, delta))
+  return Math.max(0, Math.min(MAX_SCENE_COUNT, (base ?? 0) + step))
+}
+
+/**
+ * Ids are minted here, never accepted from the caller.
+ *
+ * A model choosing its own id could target a record it was never given, or
+ * collide with one. It learns the id it got from the patch result.
+ */
+export function mintSceneId(taken: Set<string>): string {
+  let ordinal = taken.size + 1
+  while (taken.has(`sr_${ordinal}`)) ordinal += 1
+  return `sr_${ordinal}`
+}
+
+function normalizeSceneRecord(record: SceneRecord, id: string): SceneRecord {
+  return {
+    id,
+    type: SCENE_TYPE_PATTERN.test(record.type) ? record.type : "other",
+    name: sceneText(record.name, MAX_SCENE_NAME_CHARS),
+    state: sceneText(record.state, MAX_SCENE_STATE_CHARS),
+    ...(record.count === undefined ? {} : { count: Math.max(0, Math.min(MAX_SCENE_COUNT, record.count)) }),
+    description: sceneText(record.description, MAX_SCENE_DESCRIPTION_CHARS),
+  }
+}
+
+export const openworkCardExtensionSchema = z.object({
+  version: z.number().optional().catch(undefined),
+  nsfw: z.boolean().catch(false),
+  hardLimits: looseStringArray,
+  sceneRecords: z
+    .array(
+      z.object({
+        id: looseString,
+        type: looseString,
+        name: looseString,
+        state: looseString,
+        count: z.number().optional().catch(undefined),
+        description: looseString,
+      }),
+    )
+    .catch([]),
+})
+export type OpenworkCardExtension = z.infer<typeof openworkCardExtensionSchema>
+
+export function normalizeHardLimits(values: string[]): string[] {
+  const seen = new Set<string>()
+  const limits: string[] = []
+  for (const value of values) {
+    if (limits.length >= MAX_HARD_LIMITS) break
+    const text = sceneText(value, MAX_HARD_LIMIT_CHARS)
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    limits.push(text)
+  }
+  return limits
+}
+
+export function initialSceneState(authored: SceneRecord[], now: number): RoleplaySceneState {
+  const taken = new Set<string>()
+  const records: SceneRecord[] = []
+  for (const record of authored) {
+    if (records.length >= MAX_SCENE_RECORDS) break
+    const id = record.id && !taken.has(record.id) ? record.id : mintSceneId(taken)
+    taken.add(id)
+    records.push(normalizeSceneRecord(record, id))
+  }
+  return { records, revision: 0, updatedAt: now }
+}
+
+/**
+ * The only writer of scene state, and therefore the security control.
+ *
+ * Pure and total: it returns refusals rather than throwing, so the tool can hand
+ * the model a list of what it got wrong and let it try again, and so the same
+ * rules cannot be enforced differently by the two callers that write state.
+ *
+ * A model cannot remove. A garment taken off is `state: "removed"`, a toy put
+ * away is `state: "put away"` — the scene's history is the point, and a delete
+ * the model could ask for would hand an injected patch a way to erase the record
+ * of what it did. `remove` exists for the person reading the scene, and reaches
+ * here only from the app's own panel; see the field's own note.
+ *
+ * Removals are processed before upserts, so a patch that both edits and drops a
+ * record is refused the edit rather than reporting a change to something that is
+ * no longer there. A removed id is never minted again: `taken` is built before
+ * anything is dropped, because the model holds the ids it was given and reusing
+ * one would point it at a different thing than it meant.
+ */
+export function applyScenePatch(state: RoleplaySceneState, patch: SceneStatePatch, now: number): ScenePatchResult {
+  const upserts = patch.upsert ?? []
+  const removals = patch.remove ?? []
+  if (upserts.length === 0 && removals.length === 0) {
+    return { next: state, applied: [], removed: [], rejected: [], noop: true }
+  }
+
+  if (patch.revision !== undefined && patch.revision !== state.revision) {
+    return {
+      next: state,
+      applied: [],
+      removed: [],
+      rejected: [`patch: computed against revision ${patch.revision}, but the scene is at revision ${state.revision}`],
+      noop: false,
+    }
+  }
+
+  const records = state.records.map((record) => ({ ...record }))
+  const byId = new Map(records.map((record) => [record.id, record]))
+  const taken = new Set(byId.keys())
+  const applied: SceneRecord[] = []
+  const removed: string[] = []
+  const rejected: string[] = []
+  let creates = 0
+
+  removals.forEach((id, index) => {
+    if (!byId.delete(id)) {
+      rejected.push(`remove[${index}]: unknown record id "${id}".`)
+      return
+    }
+    removed.push(id)
+  })
+
+  upserts.forEach((upsert, index) => {
+    const where = `upsert[${index}]`
+
+    if (upsert.id !== undefined) {
+      const existing = byId.get(upsert.id)
+      if (!existing) {
+        rejected.push(`${where}: unknown record id "${upsert.id}". Create it without an id, or address one of the ids you were given.`)
+        return
+      }
+      if (upsert.type !== undefined && upsert.type !== existing.type) {
+        rejected.push(`${where}: "${upsert.id}" is a "${existing.type}" record and cannot become a "${upsert.type}" one.`)
+        return
+      }
+      if (upsert.name !== undefined) existing.name = sceneText(upsert.name, MAX_SCENE_NAME_CHARS)
+      if (upsert.state !== undefined) existing.state = sceneText(upsert.state, MAX_SCENE_STATE_CHARS)
+      if (upsert.description !== undefined) existing.description = sceneText(upsert.description, MAX_SCENE_DESCRIPTION_CHARS)
+      if (upsert.countDelta !== undefined) existing.count = clampSceneCount(existing.count, upsert.countDelta)
+      applied.push({ ...existing })
+      return
+    }
+
+    if (creates >= MAX_SCENE_CREATES_PER_PATCH) {
+      rejected.push(`${where}: at most ${MAX_SCENE_CREATES_PER_PATCH} records may be created in one call.`)
+      return
+    }
+    if (byId.size >= MAX_SCENE_RECORDS) {
+      rejected.push(`${where}: the scene already holds its maximum of ${MAX_SCENE_RECORDS} records.`)
+      return
+    }
+    const type = upsert.type === undefined ? "" : upsert.type.trim()
+    if (!SCENE_TYPE_PATTERN.test(type)) {
+      rejected.push(`${where}: "type" is required to create a record, as a lowercase slug of up to 24 characters.`)
+      return
+    }
+
+    const id = mintSceneId(taken)
+    taken.add(id)
+    const created = normalizeSceneRecord(
+      {
+        id,
+        type,
+        name: upsert.name ?? "",
+        state: upsert.state ?? "",
+        ...(upsert.countDelta === undefined ? {} : { count: clampSceneCount(undefined, upsert.countDelta) }),
+        description: upsert.description ?? "",
+      },
+      id,
+    )
+    records.push(created)
+    byId.set(id, created)
+    creates += 1
+    applied.push({ ...created })
+  })
+
+  if (applied.length === 0 && removed.length === 0) {
+    return { next: state, applied: [], removed: [], rejected, noop: false }
+  }
+
+  const kept = records.filter((record) => byId.has(record.id))
+  return { next: { records: kept, revision: state.revision + 1, updatedAt: now }, applied, removed, rejected, noop: false }
+}
+
+/**
+ * Put the scene back to a snapshot, wholesale.
+ *
+ * Not expressible as a patch, and deliberately so: a patch describes a change a
+ * model asked for, and this describes undoing one.
+ *
+ * The revision moves forward, never back. A restored snapshot carries an older
+ * revision than the state it replaces, and writing that number would let a patch
+ * computed against the newer state be accepted afterwards. The whole optimistic
+ * concurrency scheme rests on the revision only ever increasing.
+ *
+ * Records are re-normalized on the way in rather than trusted. A snapshot is
+ * client-supplied, and this is the one write that does not go through the patch
+ * validator. Duplicate ids are dropped rather than re-minted: a restore must
+ * never invent an id, because the model is still holding the ones it was given.
+ */
+export function applySceneRestore(
+  state: RoleplaySceneState,
+  snapshot: RoleplaySceneState,
+  now: number,
+): ScenePatchResult {
+  const seen = new Set<string>()
+  const records: SceneRecord[] = []
+  for (const record of snapshot.records) {
+    if (records.length >= MAX_SCENE_RECORDS) break
+    if (!record.id || seen.has(record.id)) continue
+    seen.add(record.id)
+    records.push(normalizeSceneRecord(record, record.id))
+  }
+
+  const unchanged =
+    records.length === state.records.length &&
+    records.every((record, index) => {
+      const current = state.records[index]
+      return (
+        current !== undefined &&
+        current.id === record.id &&
+        current.type === record.type &&
+        current.name === record.name &&
+        current.state === record.state &&
+        current.count === record.count &&
+        current.description === record.description
+      )
+    })
+  if (unchanged) return { next: state, applied: [], removed: [], rejected: [], noop: true }
+
+  const removed = state.records.filter((record) => !seen.has(record.id)).map((record) => record.id)
+  return {
+    next: { records, revision: state.revision + 1, updatedAt: now },
+    applied: records,
+    removed,
+    rejected: [],
+    noop: false,
+  }
+}
+
+export const roleplayModelRefSchema = z.object({
+  providerID: looseString,
+  modelID: looseString,
+})
+export type RoleplayModelRef = z.infer<typeof roleplayModelRefSchema>
+
 export const roleplayCharacterRecordSchema = z.object({
   id: idString,
   card: characterCardV2Schema,
-  /** V3 `nickname` when the source card carried one; drives `{{char}}` without changing the display name. */
   charSubstitutionName: looseString,
   avatarPath: looseOptionalString,
   source: roleplayCharacterSourceSchema.catch("authored"),
-  /**
-   * Set when a revision has been applied.
-   *
-   * Matters most for imported cards: once one has been revised it no longer
-   * represents its original author's work, and anything that presents it — the
-   * library, an export — should not imply otherwise.
-   */
   revisedAt: z.number().int().nonnegative().optional().catch(undefined),
-  /**
-   * Workspace skills injected as writing guidance on every turn.
-   *
-   * Stored on the character rather than in the skill's own frontmatter: a skill
-   * is a `SKILL.md` file shared out of the workspace, and writing a roleplay
-   * concept into it would leak into every skill the user exports.
-   */
   attachedSkills: z.array(roleplaySkillRefSchema).catch([]),
+  nsfw: z.boolean().catch(false),
+  sceneRecords: z.array(sceneRecordSchema).catch([]),
+  hardLimits: looseStringArray,
+  preferredModel: roleplayModelRefSchema.optional().catch(undefined),
   createdAt: timestamp,
   updatedAt: timestamp,
-  /**
-   * Set instead of removing the record. Sessions bound to a deleted character
-   * must stay readable, and rendering their past turns needs the character's
-   * name and avatar to survive the delete.
-   */
   deletedAt: z.number().int().nonnegative().optional().catch(undefined),
 })
 export type RoleplayCharacterRecord = z.infer<typeof roleplayCharacterRecordSchema>
@@ -202,44 +543,17 @@ export const roleplayPersonaRecordSchema = z.object({
 })
 export type RoleplayPersonaRecord = z.infer<typeof roleplayPersonaRecordSchema>
 
-/**
- * Per-conversation overrides for how a turn is built.
- *
- * Every field is optional and `undefined` means "use the app's default", so the
- * defaults stay in one place — the app layer that owns them — rather than being
- * copied into every stored binding, where they would freeze at whatever they
- * were the day the session started.
- *
- * These apply to a regenerate as well as to a send. A conversation therefore has
- * one live configuration rather than a per-turn one, which means two swipe
- * alternatives of the same turn may have been generated under different settings.
- */
 export const roleplaySessionSettingsSchema = z.object({
-  /** Characters of prompt the memories may occupy. */
   memoryBudgetChars: looseNumber,
-  /** Characters of prompt the matched lorebook entries may occupy. */
   lorebookBudgetChars: looseNumber,
-  /** Overrides every attached book's own scan depth. */
   scanDepth: looseNumber,
-  /**
-   * Books switched off for this conversation only.
-   *
-   * Stored as the ids that are off rather than the ids that are on: a book
-   * attached to the character after this session started is then live by
-   * default, which matches what attaching one means.
-   */
   disabledLorebookIds: looseStringArray,
-  /**
-   * Attached skills switched off for this conversation only.
-   *
-   * The off-list, for the same reason `disabledLorebookIds` is one. Names are
-   * unique within a character's attached set, so this needs no scope.
-   */
   disabledSkillNames: looseStringArray,
-  /** Replaces the card's `system_prompt`, and the app default behind it. Empty means neither. */
   systemPrompt: looseString,
-  /** False turns off speech/action/OOC colouring in this conversation's transcript. */
   colorSegments: looseBoolean,
+  intensity: looseNumber,
+  safeword: looseOptionalString,
+  deEscalated: looseBoolean,
 })
 export type RoleplaySessionSettings = z.infer<typeof roleplaySessionSettingsSchema>
 
@@ -247,167 +561,83 @@ export const roleplaySessionBindingSchema = z.object({
   sessionId: idString,
   characterId: idString,
   personaId: looseString,
-  /**
-   * User-authored continuity notes, compiled into `system` on every turn.
-   *
-   * The engine's `summarize` call takes only a provider and a model, so a
-   * roleplay-specific summarisation prompt cannot reach it. This is what carries
-   * tone and unresolved beats across a compaction the app does not control.
-   */
   storySoFar: looseString,
-  /**
-   * The line this conversation opened with, when it is not the card's.
-   *
-   * Empty means the card's `first_mes`. A generated opening lives here rather
-   * than on the card because it belongs to one session: the card's greeting was
-   * written for a first meeting, and once the character has memories each new
-   * conversation deserves its own opening without overwriting the author's.
-   */
   greeting: looseString,
-  /**
-   * Absent on every binding written before settings existed, which is why the
-   * whole object falls back rather than each field: a binding that failed to
-   * parse would unbind a live conversation from its character.
-   */
   settings: roleplaySessionSettingsSchema.catch({ disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" }),
+  sceneState: roleplaySceneStateSchema.optional().catch(undefined),
   boundAt: timestamp,
 })
 export type RoleplaySessionBinding = z.infer<typeof roleplaySessionBindingSchema>
 
-/**
- * One generated reply, kept so it survives being regenerated.
- *
- * The engine destroys a reverted reply the moment the next prompt is dispatched
- * — proven in `reports/swipe-semantics-spike.md`, including when that prompt
- * fails. So an alternative that is not copied here before the revert is gone,
- * and swipe navigation would have nothing to navigate.
- */
 export const roleplayAlternativeSchema = z.object({
   text: looseString,
-  /** The engine message id this text came from, before it was discarded. */
   messageId: looseString,
+  sceneState: roleplaySceneStateSchema.optional().catch(undefined),
   createdAt: timestamp,
 })
 export type RoleplayAlternative = z.infer<typeof roleplayAlternativeSchema>
 
-/**
- * A roleplay turn: what the user authored, and every reply it has produced.
- *
- * Keyed by a client-generated `turnId` rather than by the engine's message id,
- * because a regenerate mints new ids for both the user message and the reply. A
- * store keyed by message id would be orphaned by the exact operation the blocks
- * were persisted to survive.
- */
+export const roleplaySceneChangeRecordSchema = z.object({
+  id: looseString,
+  type: looseString,
+  name: looseString,
+  state: looseString,
+  kind: z.enum(["added", "changed"]).catch("changed"),
+})
+export type RoleplaySceneChangeRecord = z.infer<typeof roleplaySceneChangeRecordSchema>
+
 export const roleplayTurnRecordSchema = z.object({
   turnId: idString,
-  /** Carried on the record so turns can be pruned per session and on session delete. */
   sessionId: idString,
-  /** The engine's current user-message id for this turn; changes on every swipe. */
   messageId: looseString,
-  /** The parts to re-send when regenerating. `parts: []` blanks the user's message. */
   userText: looseString,
   blocks: z.array(roleplayBlockSchema).catch([]),
   alternatives: z.array(roleplayAlternativeSchema).catch([]),
-  /** Index into `alternatives` the transcript is currently showing. */
   activeAlternative: z.number().int().nonnegative().catch(0),
+  sceneStateBefore: roleplaySceneStateSchema.optional().catch(undefined),
   createdAt: timestamp,
 })
 export type RoleplayTurnRecord = z.infer<typeof roleplayTurnRecordSchema>
 
-/**
- * Where an approved memory came from.
- *
- * Not a review state — there is no `pending` here on purpose. A proposal lives
- * in the review UI and is never written, so the store can only ever hold
- * memories a person accepted. `extracted` records that the wording started as
- * model output, which is what the injection budget ranks below the user's own.
- */
 export const roleplayMemorySourceSchema = z.enum(["user", "extracted"])
 export type RoleplayMemorySource = z.infer<typeof roleplayMemorySourceSchema>
 
-/**
- * One thing a character knows across sessions.
- *
- * Keyed per character rather than per session: the entire point is that it
- * outlives the conversation it came from. `sessionId` is provenance only.
- */
 export const roleplayMemoryRecordSchema = z.object({
   id: idString,
   characterId: idString,
   text: looseString,
   source: roleplayMemorySourceSchema.catch("user"),
-  /** The conversation this was learned in, when it came from one. */
   sessionId: looseOptionalString,
   createdAt: timestamp,
   updatedAt: timestamp,
 })
 export type RoleplayMemoryRecord = z.infer<typeof roleplayMemoryRecordSchema>
 
-/**
- * One lorebook entry as stored by this app.
- *
- * The spec-shaped fields keep their snake_case names on purpose: an entry is
- * written straight back out on export, and renaming them here would mean a
- * translation layer in both directions that could only ever lose fidelity.
- *
- * `uid` is the app's own addition. The V2 `id` field is an optional number that
- * community files reuse, leave out, or collide on, so it cannot key an editor
- * row or a trace line — this can.
- */
 export const roleplayLorebookEntrySchema = characterBookEntryV3Schema.extend({
   uid: idString,
 })
 export type RoleplayLorebookEntry = z.infer<typeof roleplayLorebookEntrySchema>
 
-/**
- * A world the character knows about.
- *
- * Stored as its own record rather than inside the card, because the files people
- * actually trade — SillyTavern world info, NovelAI lorebooks, Agnai memory books
- * — are not cards, and because one world usually serves several characters. A
- * card-embedded `character_book` becomes one of these on import, attached to the
- * character it arrived with.
- *
- * The book-level fields are camelCase where the entries are snake_case: these
- * are this app's settings for the book, not fields that round-trip to a card.
- */
 export const roleplayLorebookRecordSchema = z.object({
   id: idString,
   name: looseString,
   description: looseString,
-  /** How many recent messages keys are matched against. Absent means the app default. */
   scanDepth: looseNumber,
-  /** The book's own ceiling in tokens, as the file declared it. Never raises the app's own ceiling. */
   tokenBudget: looseNumber,
   recursiveScanning: looseBoolean,
   entries: z.array(roleplayLorebookEntrySchema).catch([]),
-  /** Characters this book is attached to. A book attached to nothing is inert. */
   characterIds: looseStringArray,
   source: roleplayCharacterSourceSchema.catch("authored"),
-  /** Which platform's file this came from, for the library to show. */
   importFormat: looseOptionalString,
   createdAt: timestamp,
   updatedAt: timestamp,
 })
 export type RoleplayLorebookRecord = z.infer<typeof roleplayLorebookRecordSchema>
 
-/**
- * A card as it stood before a revision was applied.
- *
- * Kept so an approved change can be undone. Cards are small, so storing the whole
- * card rather than a patch costs little and makes rollback a copy rather than an
- * inverse-diff — which is the operation most likely to be subtly wrong when it is
- * needed most.
- *
- * The oldest revision for a character is its state before any revision, so it
- * doubles as the baseline a drift comparison is made against.
- */
 export const roleplayCardRevisionSchema = z.object({
   id: idString,
   characterId: idString,
-  /** The card *before* this revision replaced it. */
   card: characterCardV2Schema,
-  /** Field names this revision changed, for rendering the history without diffing. */
   changedFields: looseStringArray,
   createdAt: timestamp,
 })

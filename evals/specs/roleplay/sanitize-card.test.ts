@@ -187,8 +187,6 @@ describe("size limits", () => {
   });
 
   test("an over-long field is capped and the truncation is reported", () => {
-    // Capping at import beats failing at first message: the user learns the card
-    // is oversized while they can still edit it, not mid-conversation.
     const limit = CARD_FIELD_LIMITS.description;
     const result = accepted(sanitizeCard(v2Card({ description: "x".repeat(limit + 500) })));
 
@@ -221,9 +219,6 @@ describe("version handling", () => {
   });
 
   test("a V3 card degrades to V2 and names every field it lost", () => {
-    // Silent degradation is the failure mode here: a user who imports a V3 card
-    // and sees no assets must be told they were dropped, not left to assume the
-    // card was authored that way.
     const result = accepted(sanitizeCard({
       spec: "chara_card_v3",
       spec_version: "3.0",

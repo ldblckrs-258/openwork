@@ -10,19 +10,6 @@ import { characterCardV2Schema } from "../../../packages/types/src/roleplay.ts";
 import { compileDraftText, BLOCK_MARKERS } from "../../../apps/app/src/app/roleplay/blocks.ts";
 import { buildRoleplayTurn } from "../../../apps/app/src/app/roleplay/turn.ts";
 
-/**
- * What a roleplay turn actually looks like on the wire.
- *
- * The unit specs prove the compiler splits the two channels; this proves the
- * split survives the engine. Director text is the case that matters: it is the
- * one thing the user types that must never reach the message, and every layer
- * between the composer and the provider gets a chance to put it back.
- *
- * A local OpenAI-compatible server stands in for the provider and captures each
- * assembled request, so this needs no credentials and no network — but it drives
- * the real `opencode` binary and the real shipped agent config.
- */
-
 const OPENCODE_BIN = join(homedir(), ".opencode", "bin", "opencode");
 const PROVIDER_PORT = 4933;
 const ENGINE_PORT = 4934;
@@ -59,7 +46,6 @@ function startProvider(): Promise<void> {
             })),
           });
 
-          // The engine always requests `stream: true`, so responses must be SSE.
           const chunk = (delta: unknown, finish?: string) =>
             `data: ${JSON.stringify({
               id: "chatcmpl-spec",
@@ -99,9 +85,7 @@ async function waitForEngine(): Promise<void> {
     try {
       const response = await fetch(`http://127.0.0.1:${ENGINE_PORT}/app`);
       if (response.ok) return;
-    } catch {
-      // not up yet
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("opencode engine did not become ready");
@@ -211,8 +195,6 @@ describe.skipIf(!available)("a roleplay turn on the wire", () => {
       `${BLOCK_MARKERS.action}leans on the counter\n${BLOCK_MARKERS.dialogue}Where is the ledger?\n${BLOCK_MARKERS.director}${DIRECTOR}`,
     );
 
-    // The positive assertion first: an empty user message would satisfy every
-    // "not.toContain" below without proving anything.
     expect(wire.user).toContain('"Where is the ledger?"');
     expect(wire.system).toContain(DIRECTOR);
     expect(wire.user).not.toContain(DIRECTOR);
@@ -230,8 +212,6 @@ describe.skipIf(!available)("a roleplay turn on the wire", () => {
   });
 
   test("no block marker survives into the message", async () => {
-    // The markers exist only so chips survive the composer's flat-string codec.
-    // A marker on the wire would read to the model as scene text.
     const wire = await sendRoleplayTurn(`${BLOCK_MARKERS.dialogue}Well?`);
 
     for (const marker of Object.values(BLOCK_MARKERS)) {
@@ -240,8 +220,6 @@ describe.skipIf(!available)("a roleplay turn on the wire", () => {
   });
 
   test("the character prompt and the environment context share the system message", async () => {
-    // Roleplay composes onto the env context rather than replacing it; replacing
-    // would strip a string every other feature assumes is present.
     const wire = await sendRoleplayTurn(`${BLOCK_MARKERS.dialogue}Hello.`);
 
     expect(wire.system).toContain("The archivist of a drowned library.");
@@ -249,8 +227,6 @@ describe.skipIf(!available)("a roleplay turn on the wire", () => {
   });
 
   test("the greeting the client rendered is visible to the model", async () => {
-    // It is not in engine history — the engine cannot write an assistant message
-    // — so without this the model has no record of having opened the scene.
     const wire = await sendRoleplayTurn(`${BLOCK_MARKERS.dialogue}Hello.`);
 
     expect(wire.system).toContain("You're late, Wren.");

@@ -30,6 +30,7 @@ import {
   listSessionTurns,
   readTurn,
   readSessionBinding,
+  updateSceneState,
   writeCharacter,
   writeTurn,
   writePersona,
@@ -91,6 +92,9 @@ function characterRecord(id: string, name = "Aria", description?: string): Rolep
     charSubstitutionName: name,
     source: "authored",
     attachedSkills: [],
+    nsfw: false,
+    sceneRecords: [],
+    hardLimits: [],
     createdAt: 1_700_000_000,
     updatedAt: 1_700_000_000,
   };
@@ -164,8 +168,6 @@ describe("characters", () => {
   });
 
   test("a structurally invalid record is refused loudly rather than saved half-formed", async () => {
-    // A record that fails validation is a caller bug, not untrusted input.
-    // Dropping it silently would show the user a successful save and no character.
     const broken = { ...characterRecord("char_broken"), id: "" } as RoleplayCharacterRecord;
 
     await expect(writeCharacter(config, WORKSPACE_A, broken)).rejects.toThrow(/Refusing to persist/);
@@ -198,10 +200,6 @@ describe("characters", () => {
 
 describe("concurrent writes", () => {
   test("simultaneous writes all survive; none is silently lost", async () => {
-    // This is the defining hazard of a one-blob-per-workspace store. Without the
-    // promise-chain serializer every one of these calls reads the same document
-    // and the last write wins, so the user loses edits with no error shown. If
-    // this regresses, the serializer has been bypassed.
     const ids = Array.from({ length: 25 }, (_, index) => `char_concurrent_${index}`);
 
     await Promise.all(ids.map((id) => writeCharacter(config, WORKSPACE_B, characterRecord(id, `Name ${id}`))));
@@ -211,8 +209,6 @@ describe("concurrent writes", () => {
   });
 
   test("a persona round-trips and can be deleted outright", async () => {
-    // Personas are the user's own text, not untrusted card data, so they are
-    // removed rather than tombstoned — nothing renders a past turn from them.
     await writePersona(config, WORKSPACE_A, {
       id: "persona_round_trip",
       persona: { name: "Wren", description: "A courier with an overdue book." },
@@ -242,6 +238,160 @@ describe("concurrent writes", () => {
   });
 });
 
+describe("scene state", () => {
+  const binding = (sessionId: string) => ({
+    sessionId,
+    characterId: "char_scene",
+    personaId: "",
+    storySoFar: "",
+    greeting: "",
+    settings: { disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
+    boundAt: 1,
+  });
+
+  test("a session with no binding cannot be given scene state", async () => {
+    // This is the scoping mechanism for a tool that `plugin[]` advertises to
+    // every agent: an ordinary coding session that calls it has no scene to
+    // change, so there is nothing for it to write.
+    const written = await updateSceneState(config, WORKSPACE_A, "ses_never_bound", () => ({
+      records: [{ id: "sr_1", type: "clothes", name: "blouse", state: "worn", description: "" }],
+      revision: 1,
+      updatedAt: 2,
+    }));
+
+    expect(written).toBeUndefined();
+    expect(await readSessionBinding(config, WORKSPACE_A, "ses_never_bound")).toBeUndefined();
+  });
+
+  test("an updater that declines leaves the stored state alone", async () => {
+    await bindSession(config, WORKSPACE_A, binding("ses_declined"));
+
+    expect(await updateSceneState(config, WORKSPACE_A, "ses_declined", () => undefined)).toBeUndefined();
+    expect((await readSessionBinding(config, WORKSPACE_A, "ses_declined"))?.binding.sceneState).toBeUndefined();
+  });
+
+  test("writing scene state leaves every other field on the binding untouched", async () => {
+    await bindSession(config, WORKSPACE_A, { ...binding("ses_scene"), storySoFar: "The library floods at dusk." });
+
+    await updateSceneState(config, WORKSPACE_A, "ses_scene", () => ({
+      records: [{ id: "sr_1", type: "pose", name: "", state: "standing", description: "" }],
+      revision: 1,
+      updatedAt: 2,
+    }));
+
+    const stored = (await readSessionBinding(config, WORKSPACE_A, "ses_scene"))?.binding;
+    expect(stored?.storySoFar).toBe("The library floods at dusk.");
+    expect(stored?.sceneState?.records).toHaveLength(1);
+  });
+
+  test("concurrent scene writes each see the previous one, so none is silently lost", async () => {
+    await bindSession(config, WORKSPACE_A, binding("ses_racing"));
+
+    await Promise.all(
+      Array.from({ length: 10 }, (_unused, index) =>
+        updateSceneState(config, WORKSPACE_A, "ses_racing", (current) => ({
+          records: [
+            ...(current?.records ?? []),
+            { id: `sr_${index}`, type: "toys", name: `toy ${index}`, state: "present", description: "" },
+          ],
+          revision: (current?.revision ?? 0) + 1,
+          updatedAt: 2,
+        })),
+      ),
+    );
+
+    const stored = (await readSessionBinding(config, WORKSPACE_A, "ses_racing"))?.binding.sceneState;
+    expect(stored?.records).toHaveLength(10);
+    expect(stored?.revision).toBe(10);
+  });
+});
+
+describe("a session opens from the character's authored scene", () => {
+  const authored = [
+    { id: "sr_1", type: "clothes", name: "silk blouse", state: "worn", description: "" },
+    { id: "sr_2", type: "pose", name: "", state: "by the window", description: "" },
+  ];
+
+  const nsfwCharacter = (id: string) => ({ ...characterRecord(id), nsfw: true, sceneRecords: authored });
+
+  const binding = (sessionId: string, characterId: string) => ({
+    sessionId,
+    characterId,
+    personaId: "",
+    storySoFar: "",
+    greeting: "",
+    settings: { disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" },
+    boundAt: 1,
+  });
+
+  test("binding seeds the scene, which is why the client cannot be the one to do it", async () => {
+    await writeCharacter(config, WORKSPACE_A, nsfwCharacter("char_seed"));
+
+    const bound = await bindSession(config, WORKSPACE_A, binding("ses_seed", "char_seed"));
+
+    expect(bound.sceneState?.records.map((record) => record.name)).toEqual(["silk blouse", ""]);
+    expect(bound.sceneState?.revision).toBe(0);
+  });
+
+  test("a character with the switch off seeds nothing", async () => {
+    await writeCharacter(config, WORKSPACE_A, { ...nsfwCharacter("char_off"), nsfw: false });
+
+    const bound = await bindSession(config, WORKSPACE_A, binding("ses_off", "char_off"));
+
+    expect(bound.sceneState).toBeUndefined();
+  });
+
+  test("rebinding the same session carries the live scene rather than reseeding it", async () => {
+    await writeCharacter(config, WORKSPACE_A, nsfwCharacter("char_carry"));
+    await bindSession(config, WORKSPACE_A, binding("ses_carry", "char_carry"));
+    await updateSceneState(config, WORKSPACE_A, "ses_carry", (current) => ({
+      records: [{ ...(current?.records[0] ?? authored[0]!), state: "displaced" }],
+      revision: 4,
+      updatedAt: 9,
+    }));
+
+    const rebound = await bindSession(config, WORKSPACE_A, {
+      ...binding("ses_carry", "char_carry"),
+      storySoFar: "The rain has not let up.",
+    });
+
+    expect(rebound.storySoFar).toBe("The rain has not let up.");
+    expect(rebound.sceneState?.revision).toBe(4);
+    expect(rebound.sceneState?.records[0]?.state).toBe("displaced");
+  });
+
+  test("scene state on the incoming binding is ignored, not honoured", async () => {
+    await writeCharacter(config, WORKSPACE_A, nsfwCharacter("char_stale"));
+    await bindSession(config, WORKSPACE_A, binding("ses_stale", "char_stale"));
+    await updateSceneState(config, WORKSPACE_A, "ses_stale", () => ({
+      records: [{ id: "sr_1", type: "clothes", name: "silk blouse", state: "removed", description: "" }],
+      revision: 6,
+      updatedAt: 9,
+    }));
+
+    const rebound = await bindSession(config, WORKSPACE_A, {
+      ...binding("ses_stale", "char_stale"),
+      sceneState: { records: [], revision: 0, updatedAt: 1 },
+    });
+
+    expect(rebound.sceneState?.revision).toBe(6);
+    expect(rebound.sceneState?.records[0]?.state).toBe("removed");
+  });
+
+  test("rebinding to a different character reseeds, because the old scene described someone else", async () => {
+    await writeCharacter(config, WORKSPACE_A, nsfwCharacter("char_first"));
+    await writeCharacter(config, WORKSPACE_A, {
+      ...nsfwCharacter("char_second"),
+      sceneRecords: [{ id: "sr_1", type: "toys", name: "blindfold", state: "put away", description: "" }],
+    });
+    await bindSession(config, WORKSPACE_A, binding("ses_swap", "char_first"));
+
+    const rebound = await bindSession(config, WORKSPACE_A, binding("ses_swap", "char_second"));
+
+    expect(rebound.sceneState?.records.map((record) => record.name)).toEqual(["blindfold"]);
+  });
+});
+
 describe("character delete", () => {
   test("deleting a character leaves its bound session readable in a deleted state", async () => {
     await writeCharacter(config, WORKSPACE_A, characterRecord("char_doomed", "Doomed"));
@@ -258,8 +408,6 @@ describe("character delete", () => {
     const state = await readSessionBinding(config, WORKSPACE_A, "ses_doomed");
     expect(state?.characterDeleted).toBe(true);
     expect(state?.binding.characterId).toBe("char_doomed");
-    // The card survives the tombstone so the transcript can still render the
-    // character's name; a hard delete would orphan the conversation.
     expect(state?.character?.card.data.name).toBe("Doomed");
     expect((await listCharacters(config, WORKSPACE_A)).map((entry) => entry.id)).not.toContain("char_doomed");
   });
@@ -289,8 +437,6 @@ describe("turns", () => {
   }
 
   test("a turn is retrievable by the client turn id, not the engine message id", async () => {
-    // The engine mints new message ids on every regenerate, so a message-keyed
-    // record would be orphaned by the one operation it exists to survive.
     await writeTurn(config, WORKSPACE_A, turnRecord("turn_round_trip", "ses_turns"));
 
     const stored = await readTurn(config, WORKSPACE_A, "turn_round_trip");
@@ -299,8 +445,6 @@ describe("turns", () => {
   });
 
   test("captured alternatives survive a rewrite of the turn", async () => {
-    // These are the only copies: the engine destroys a reverted reply as soon as
-    // the replacement prompt is dispatched.
     await writeTurn(config, WORKSPACE_A, turnRecord("turn_alts", "ses_turns", {
       alternatives: [
         { text: "She says nothing.", messageId: "msg_a", createdAt: 1 },
@@ -323,9 +467,6 @@ describe("turns", () => {
   });
 
   test("retained turns per session are capped, oldest first", async () => {
-    // Turns grow with conversation length and are never read in bulk, so an
-    // uncapped store grows without bound inside a document that is deserialized
-    // on every read.
     const total = MAX_RETAINED_TURNS_PER_SESSION + 5;
     for (let index = 0; index < total; index += 1) {
       await writeTurn(config, WORKSPACE_A, turnRecord(`turn_capped_${index}`, "ses_capped", { createdAt: index }));
@@ -356,8 +497,6 @@ describe("turns", () => {
 describe("schema version", () => {
   test("every store stamps the current schema version so a future bump can migrate", async () => {
     await writeCharacter(config, WORKSPACE_A, characterRecord("char_versioned"));
-    // Each table is created on its first write, so every store needs one before
-    // its version can be read back.
     await writeMemory(config, WORKSPACE_A, {
       id: "mem_versioned",
       characterId: "char_versioned",
@@ -483,9 +622,6 @@ describe("revisions", () => {
   });
 
   test("pruning drops from the middle and never the original", async () => {
-    // The oldest entry is the card before anything was applied. It is what a
-    // drift comparison and a full rollback are made against, so a plain
-    // "keep the last N" would discard the one entry the feature exists for.
     for (let index = 0; index < MAX_REVISIONS_PER_CHARACTER + 5; index += 1) {
       await writeRevision(config, WORKSPACE_A, revisionRecord(`rev_cap_${index}`, "char_cap_rev", index, `v${index}`));
     }
@@ -517,8 +653,6 @@ describe("memories", () => {
   }
 
   test("a memory survives the session it was learned in", async () => {
-    // The entire feature. Memories are keyed per character, so nothing about the
-    // conversation they came from can take them with it.
     await writeMemory(config, WORKSPACE_A, memoryRecord("mem_1", "char_mem", { sessionId: "ses_old" }));
     await clearSessionBinding(config, WORKSPACE_A, "ses_old");
 
@@ -554,9 +688,6 @@ describe("memories", () => {
   });
 
   test("forgetting removes the entry outright", async () => {
-    // Unlike a character, a memory has nothing pointing at it, so there is no
-    // reason to tombstone one — and "forget" that leaves the fact on disk would
-    // be a lie about what the button did.
     await writeMemory(config, WORKSPACE_A, memoryRecord("mem_gone", "char_forget"));
 
     expect(await deleteMemory(config, WORKSPACE_A, "mem_gone")).toBe(true);
@@ -583,10 +714,6 @@ describe("memories", () => {
 
 describe("scale", () => {
   test("a 100+ character library stays within the budget that justified the blob store", async () => {
-    // The blob-plus-serializer design was chosen over a keyed table on the
-    // expectation that libraries this size stay fast. These numbers are the
-    // escalation trigger: if they degrade, move to a keyed table before more UI
-    // is built on the assumption.
     const workspace = "ws_roleplay_scale";
     const description = "x".repeat(2_000);
     const fixture = Array.from({ length: 120 }, (_, index) => characterRecord(`char_scale_${index}`, `Name ${index}`, description));

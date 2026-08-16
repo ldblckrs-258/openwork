@@ -139,22 +139,18 @@ export function readPngChunks(bytes: Uint8Array): PngChunksResult {
   return { ok: true, chunks };
 }
 
-/** Split chunk data on its first NUL. Every keyword-bearing chunk type starts this way. */
 function splitKeyword(data: Uint8Array): { keyword: string; rest: Uint8Array } | undefined {
   const separator = data.indexOf(0);
   if (separator <= 0) return undefined;
   return { keyword: ascii(data.subarray(0, separator)), rest: data.subarray(separator + 1) };
 }
 
-/** Keyword casing is inconsistent across the specs; implementations all write lowercase. */
 function isCardKeyword(keyword: string): keyword is typeof CARD_KEYWORD_V2 | typeof CARD_KEYWORD_V3 {
   const lower = keyword.toLowerCase();
   return lower === CARD_KEYWORD_V2 || lower === CARD_KEYWORD_V3;
 }
 
 function decodeBase64Json(text: string): { ok: true; value: unknown } | { ok: false; detail: string } {
-  // Hand-rolled encoders and CLI tools wrap base64 at 64 or 76 columns, which is
-  // illegal inside a tEXt value and common in the wild.
   const compact = text.replace(/\s+/g, "");
   let binary: string;
   try {
@@ -200,8 +196,6 @@ export function decodeCardFromPng(bytes: Uint8Array): PngCardResult {
 
   const keyword = text.has(CARD_KEYWORD_V3) ? CARD_KEYWORD_V3 : text.has(CARD_KEYWORD_V2) ? CARD_KEYWORD_V2 : undefined;
   if (!keyword) {
-    // Reported distinctly from "no card at all": the user needs to know the card
-    // is there and unreadable by design, not that they picked the wrong file.
     if (compressed) return { ok: false, reason: { kind: "compressed_card", ...compressed } };
     return { ok: false, reason: { kind: "no_card" } };
   }
@@ -250,14 +244,6 @@ export function writePngChunks(chunks: PngChunk[]): Uint8Array {
 
 export type PngEncodeResult = { ok: true; bytes: Uint8Array } | { ok: false; reason: PngFailure };
 
-/**
- * Embed a card into an existing PNG, replacing any card chunks already there.
- *
- * Both `chara` and `ccv3` are written, which is what SillyTavern does: one file
- * then works in V2-only readers and V3-aware ones without the user choosing a
- * format. The chunks go immediately before `IEND` so `IDAT` runs stay adjacent —
- * some strict decoders require that.
- */
 export function encodeCardToPng(imageBytes: Uint8Array, cardV2: unknown, cardV3: unknown): PngEncodeResult {
   const read = readPngChunks(imageBytes);
   if (!read.ok) return { ok: false, reason: read.reason };

@@ -24,15 +24,6 @@ function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
-/**
- * The card's history, and the way back.
- *
- * Undo writes another revision rather than deleting the one it reverses, so the
- * history stays a record of what happened rather than of what is currently
- * believed. The drift line at the top is the mitigation for the failure this page
- * exists for: many individually reasonable approvals adding up to a character the
- * user never wrote.
- */
 export function CharacterRevisions({ endpoint, character, onBack }: CharacterRevisionsProps) {
   const revisions = useRoleplayRevisions(endpoint, character.id);
   const applyRevision = useApplyRoleplayRevision(endpoint);
@@ -74,9 +65,6 @@ export function CharacterRevisions({ endpoint, character, onBack }: CharacterRev
       </div>
 
       {character.source === "imported" && character.revisedAt ? (
-        // The provenance note. Once an imported card has been revised it is no
-        // longer its original author's work, and an export that implied otherwise
-        // would misattribute the user's own edits to a stranger.
         <p className="text-muted-foreground text-sm">
           This started as an imported card and has been changed since. An export of it is your version, not the
           original author&apos;s.

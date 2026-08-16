@@ -107,8 +107,6 @@ describe("roleplay routes", () => {
     })).json();
     expect(deleted.deleted).toBe(true);
 
-    // Tombstoned rather than removed: gone from the library, still readable by id
-    // so a session bound to it can still render its transcript.
     const afterDelete = await (await fetch(`${base}/workspace/ws_1/roleplay/characters`, { headers: auth(token) })).json();
     expect(afterDelete.characters).toEqual([]);
     const stillReadable = await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, { headers: auth(token) });
@@ -123,8 +121,6 @@ describe("roleplay routes", () => {
   });
 
   test("an invalid character is rejected at the edge with a 400", async () => {
-    // A store-level throw would surface as a 500 for what is really a bad request,
-    // and the client would have no field to point the user at.
     const { base, token } = await startOpenworkServer();
 
     const response = await fetch(`${base}/workspace/ws_1/roleplay/characters/char_bad`, {
@@ -136,8 +132,6 @@ describe("roleplay routes", () => {
   });
 
   test("a body whose id disagrees with the path is rejected", async () => {
-    // Otherwise the record silently lands under a different key than the caller
-    // addressed, and the next read looks like the write vanished.
     const { base, token } = await startOpenworkServer();
 
     const response = await fetch(`${base}/workspace/ws_1/roleplay/characters/char_path`, {
@@ -187,9 +181,6 @@ describe("roleplay routes", () => {
   });
 
   test("a session binding round-trips and carries its character with it", async () => {
-    // The binding is what makes a session a roleplay session, and the send path
-    // needs the character in the same response — a second round trip would let
-    // a turn be composed against a character the client had not loaded yet.
     const { base, token } = await startOpenworkServer();
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
       method: "PUT",
@@ -213,6 +204,88 @@ describe("roleplay routes", () => {
     expect(read.characterDeleted).toBe(false);
   });
 
+  test("the scene route takes a patch or a snapshot, and a snapshot always moves the revision forward", async () => {
+    // Both writers share this route so the rules live in one place, but they ask
+    // for different things: the tool patches, and the app puts a scene back to
+    // where a reply left it. A restore that wrote the snapshot's own older
+    // revision would let a patch computed against the state being discarded be
+    // accepted afterwards, which is the concurrency check inverted.
+    const { base, token } = await startOpenworkServer();
+    await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify(characterBody("char_1")),
+    });
+    await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", storySoFar: "", boundAt: 5 } }),
+    });
+
+    const scene = `${base}/workspace/ws_1/roleplay/sessions/ses_1/scene-state`;
+    const created = await (await fetch(scene, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ patch: { upsert: [{ type: "clothes", name: "silk blouse", state: "worn" }] } }),
+    })).json();
+    expect(created.revision).toBe(1);
+    const opening = { records: created.applied, revision: created.revision, updatedAt: 1 };
+
+    const changed = await (await fetch(scene, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ patch: { upsert: [{ id: created.applied[0].id, state: "removed" }] } }),
+    })).json();
+    expect(changed.revision).toBe(2);
+
+    const restored = await (await fetch(scene, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ restore: opening }),
+    })).json();
+    expect(restored.revision).toBe(3);
+
+    const read = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, { headers: auth(token) })).json();
+    expect(read.binding.sceneState.records[0].state).toBe("worn");
+    expect(read.binding.sceneState.revision).toBe(3);
+  });
+
+  test("a malformed snapshot is refused at the edge rather than written", async () => {
+    const { base, token } = await startOpenworkServer();
+    await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify(characterBody("char_1")),
+    });
+    await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
+      method: "PUT",
+      headers: auth(token),
+      body: JSON.stringify({ binding: { sessionId: "ses_1", characterId: "char_1", personaId: "persona_1", storySoFar: "", boundAt: 5 } }),
+    });
+
+    const refused = await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/scene-state`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ restore: "the whole scene" }),
+    });
+
+    expect(refused.status).toBe(400);
+  });
+
+  test("a scene write against a session with no binding is a 404", async () => {
+    // The scoping mechanism for a tool that `plugin[]` advertises engine-wide: an
+    // ordinary coding session that calls it has no scene to change.
+    const { base, token } = await startOpenworkServer();
+
+    const refused = await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_unbound/scene-state`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ patch: { upsert: [{ type: "clothes" }] } }),
+    });
+
+    expect(refused.status).toBe(404);
+  });
+
   test("deleting the bound character leaves the session readable and says so", async () => {
     const { base, token } = await startOpenworkServer();
     await fetch(`${base}/workspace/ws_1/roleplay/characters/char_1`, {
@@ -233,9 +306,6 @@ describe("roleplay routes", () => {
   });
 
   test("a turn is stored under its client turn id so a regenerate cannot orphan it", async () => {
-    // Director text lives in `system`, not in message history, and the engine
-    // mints new message ids on every regenerate. A message-keyed record would be
-    // orphaned by the exact operation it exists to survive.
     const { base, token } = await startOpenworkServer();
     const turn = {
       turn: {
@@ -262,8 +332,45 @@ describe("roleplay routes", () => {
     const listed = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/turns`, { headers: auth(token) })).json();
     expect(listed.turns).toHaveLength(1);
     expect(listed.turns[0].blocks).toEqual(turn.turn.blocks);
-    // The captured reply is the only copy left once the engine has replaced it.
     expect(listed.turns[0].alternatives[0].text).toBe("She says nothing.");
+  });
+
+  test("a revert discards the turns it orphaned, and says so again if asked twice", async () => {
+    const { base, token } = await startOpenworkServer();
+    for (const turnId of ["turn_1", "turn_2"]) {
+      await fetch(`${base}/workspace/ws_1/roleplay/turns/${turnId}`, {
+        method: "PUT",
+        headers: auth(token),
+        body: JSON.stringify({
+          turn: {
+            turnId,
+            sessionId: "ses_1",
+            messageId: `msg_${turnId}`,
+            userText: "hi",
+            blocks: [],
+            alternatives: [],
+            activeAlternative: 0,
+            createdAt: 7,
+          },
+        }),
+      });
+    }
+
+    const deleted = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/turns/delete`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ turnIds: ["turn_2"] }),
+    })).json();
+    expect(deleted.deleted).toBe(1);
+
+    const remaining = await (await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/turns`, { headers: auth(token) })).json();
+    expect(remaining.turns.map((entry: { turnId: string }) => entry.turnId)).toEqual(["turn_1"]);
+
+    expect((await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1/turns/delete`, {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify({ turnIds: ["turn_2"] }),
+    })).status).toBe(200);
   });
 
   test("clearing a binding also drops the turns stored for that session", async () => {
@@ -301,9 +408,6 @@ describe("roleplay routes", () => {
   });
 
   test("the story so far round-trips on the binding", async () => {
-    // It is compiled into `system` on every turn, and it is the only thing that
-    // carries tone and unresolved beats across a compaction the app does not
-    // control: `summarize` takes no prompt parameter.
     const { base, token } = await startOpenworkServer();
 
     await fetch(`${base}/workspace/ws_1/roleplay/sessions/ses_1`, {
@@ -447,8 +551,6 @@ describe("roleplay routes", () => {
   });
 
   test("an entry with no uid is rejected at the edge", async () => {
-    // The uid is what an editor row and a trace line are keyed by; a book stored
-    // without one would render with colliding keys and untraceable entries.
     const { base, token } = await startOpenworkServer();
 
     const response = await fetch(`${base}/workspace/ws_1/roleplay/lorebooks/lore_bad`, {

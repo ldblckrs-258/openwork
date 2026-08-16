@@ -1,12 +1,4 @@
 /**
- * Local, per-workspace storage for roleplay characters, personas, session
- * bindings, and per-turn composer blocks.
- *
- * `createWorkspaceKvStore` is a one-document-per-workspace blob store, not a
- * keyed table: the table is keyed by `workspace_id` alone and carries a single
- * JSON value column. Each store below therefore holds a whole map-shaped
- * document that is deserialized on every read and rewritten on every write.
- *
  * That makes lost updates the defining hazard — two concurrent read-modify-write
  * cycles silently discard one of them, and the user sees "my edit didn't save"
  * with no error. Every mutation goes through `runQueued`, the same promise-chain
@@ -23,11 +15,13 @@ import {
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
+  initialSceneState,
   type RoleplayCardRevision,
   type RoleplayCharacterRecord,
   type RoleplayLorebookRecord,
   type RoleplayMemoryRecord,
   type RoleplayPersonaRecord,
+  type RoleplaySceneState,
   type RoleplaySessionBinding,
   type RoleplayTurnRecord,
 } from "@openwork/types/roleplay";
@@ -35,37 +29,16 @@ import { runtimeDbPath } from "./runtime-db.js";
 import type { ServerConfig } from "./types.js";
 import { createWorkspaceKvStore, isRecord } from "./workspace-kv-store.js";
 
-/** Retained composer turns per session. Blocks grow with conversation length and are never read in bulk. */
 export const MAX_RETAINED_TURNS_PER_SESSION = 200;
 
-/**
- * Retained memories per character.
- *
- * Far more than the injection budget will ever fit, so this is a storage bound
- * rather than a prompt one — it stops a library from growing without limit while
- * leaving the prompt-side selection entirely to `memory.ts`.
- */
 export const MAX_MEMORIES_PER_CHARACTER = 500;
 
-/**
- * Retained card revisions per character.
- *
- * The oldest is never dropped: it is the card as it stood before any revision,
- * and it is what a drift comparison and a full rollback are made against. Losing
- * it would make the intermediate history meaningless.
- */
 export const MAX_REVISIONS_PER_CHARACTER = 50;
 
 type Document<T> = Record<string, T>;
 
 const updateQueueByKey = new Map<string, Promise<void>>();
 
-/**
- * Serialize a mutation against one store document.
- *
- * Copied deliberately from `session-groups.ts:125-140` rather than redesigned —
- * it is the only proven concurrency pattern for this blob store in this repo.
- */
 async function runQueued<T>(key: string, job: () => Promise<T>): Promise<T> {
   const previous = updateQueueByKey.get(key) ?? Promise.resolve();
   let release = () => {};
@@ -108,7 +81,6 @@ function parseDocument<T>(json: string, schema: ZodType<T>): Document<T> {
   for (const [id, value] of Object.entries(raw)) {
     if (PROTOTYPE_KEYS.includes(id)) continue;
     const parsed = schema.safeParse(value);
-    // One corrupt entry must not take the whole workspace's characters with it.
     if (parsed.success) assign(document, id, parsed.data);
   }
   return document;
@@ -210,13 +182,6 @@ export async function writeCharacter(
   });
 }
 
-/**
- * Tombstone a character rather than removing it.
- *
- * Sessions bound to it must stay readable, and their transcript still needs the
- * character's name and avatar to render. A hard delete would leave those
- * sessions pointing at nothing.
- */
 export async function deleteCharacter(
   config: ServerConfig,
   workspaceId: string,
@@ -262,24 +227,67 @@ export type SessionBindingState = {
   characterDeleted: boolean;
 };
 
+/**
+ * Incoming `sceneState` is ignored outright. Every other caller of this route
+ * rewrites the whole binding from a copy it read earlier — a persona change, a
+ * story-so-far save, the second write that replaces a generated greeting — and
+ * that copy can be up to `staleTime` old. Honouring it would let an unrelated
+ * settings change roll the scene back to whatever the client last saw. The
+ * scene-state route is the only writer; this one only carries state forward.
+ */
 export async function bindSession(
   config: ServerConfig,
   workspaceId: string,
   binding: RoleplaySessionBinding,
 ): Promise<RoleplaySessionBinding> {
+  const character = await readCharacter(config, workspaceId, binding.characterId);
+  const seeded =
+    character && character.nsfw && character.sceneRecords.length > 0
+      ? initialSceneState(character.sceneRecords, Date.now())
+      : undefined;
+
+  // Dropped from the incoming binding rather than overwritten, or a body that
+  // carried one would survive the spread whenever there is nothing to replace it
+  // with — which is exactly the stale write this function exists to refuse.
+  const { sceneState: _ignored, ...withoutScene } = binding;
+
   return sessionStore.updateDocument(config, workspaceId, (current) => {
-    const next = { ...current, [binding.sessionId]: binding };
-    return { next, result: binding };
+    const existing = current[binding.sessionId];
+    const carried = existing && existing.characterId === binding.characterId ? existing.sceneState : undefined;
+    const sceneState = carried ?? seeded;
+    const stored: RoleplaySessionBinding = { ...withoutScene, ...(sceneState ? { sceneState } : {}) };
+    const next = { ...current, [binding.sessionId]: stored };
+    return { next, result: stored };
   });
 }
 
 /**
- * Read a session's binding together with the character it points at.
+ * Not a read-then-`bindSession`: that is two trips through the queue with a gap
+ * in between, so a turn's tool write and the user's HUD edit can each read the
+ * same binding and the second one to finish silently discards the first. Both
+ * writers land here, inside one `updateDocument` cycle, which is the race this
+ * store's header warns must not be reintroduced.
  *
- * `characterDeleted` is what the chat surface renders its "character deleted"
- * state from; the binding itself is never cleared, so the conversation stays
- * readable.
+ * The updater receives the current state so the caller can decide against what it
+ * actually finds — a patch is computed against a revision, and returning
+ * `undefined` is how a caller declines once it sees the state has moved.
  */
+export async function updateSceneState(
+  config: ServerConfig,
+  workspaceId: string,
+  sessionId: string,
+  updater: (current: RoleplaySceneState | undefined) => RoleplaySceneState | undefined,
+): Promise<RoleplaySessionBinding | undefined> {
+  return sessionStore.updateDocument(config, workspaceId, (current) => {
+    const binding = current[sessionId];
+    if (!binding) return { next: current, result: undefined };
+    const sceneState = updater(binding.sceneState);
+    if (sceneState === undefined) return { next: current, result: undefined };
+    const updated: RoleplaySessionBinding = { ...binding, sceneState };
+    return { next: { ...current, [sessionId]: updated }, result: updated };
+  });
+}
+
 export async function readSessionBinding(
   config: ServerConfig,
   workspaceId: string,
@@ -306,13 +314,6 @@ export async function clearSessionBinding(
   return cleared;
 }
 
-/**
- * Store or replace a turn.
- *
- * Keyed by the client's `turnId`, not the engine's message id: a regenerate
- * mints new ids for both the user message and the reply, so a message-keyed
- * record would be orphaned by the one operation it exists to survive.
- */
 export async function writeTurn(
   config: ServerConfig,
   workspaceId: string,
@@ -337,7 +338,24 @@ export async function readTurn(
   return (await turnStore.read(config, workspaceId))[turnId];
 }
 
-/** Oldest first, so the caller renders them in the order they were authored. */
+export async function deleteTurns(
+  config: ServerConfig,
+  workspaceId: string,
+  turnIds: string[],
+): Promise<number> {
+  if (turnIds.length === 0) return 0;
+  return turnStore.updateDocument(config, workspaceId, (current) => {
+    const next = { ...current };
+    let deleted = 0;
+    for (const turnId of turnIds) {
+      if (!(turnId in next)) continue;
+      delete next[turnId];
+      deleted += 1;
+    }
+    return { next, result: deleted };
+  });
+}
+
 export async function listSessionTurns(
   config: ServerConfig,
   workspaceId: string,
@@ -348,7 +366,6 @@ export async function listSessionTurns(
     .sort((left, right) => left.createdAt - right.createdAt);
 }
 
-/** Oldest first, so the management page reads in the order the character learned things. */
 export async function listCharacterMemories(
   config: ServerConfig,
   workspaceId: string,
@@ -360,8 +377,6 @@ export async function listCharacterMemories(
 }
 
 /**
- * Store or replace a memory.
- *
  * Only ever called for something a person approved: proposals live in the review
  * UI and never reach here, which is what makes "nothing persists unreviewed" a
  * property of the design rather than of a flag someone has to set correctly.
@@ -391,7 +406,6 @@ export async function deleteMemory(config: ServerConfig, workspaceId: string, me
   });
 }
 
-/** Oldest first: the first entry is the card before any revision. */
 export async function listCharacterRevisions(
   config: ServerConfig,
   workspaceId: string,
@@ -402,13 +416,6 @@ export async function listCharacterRevisions(
     .sort((left, right) => left.createdAt - right.createdAt);
 }
 
-/**
- * Record the card as it stood before a revision.
- *
- * Pruning drops from the middle, never the ends: the oldest is the original and
- * the newest is the most likely undo target, so a plain "keep the last N" would
- * discard the one entry the feature exists to preserve.
- */
 export async function writeRevision(
   config: ServerConfig,
   workspaceId: string,
@@ -428,7 +435,6 @@ export async function writeRevision(
   });
 }
 
-/** Newest first, matching the character library, since the lorebook page sits beside it. */
 export async function listLorebooks(config: ServerConfig, workspaceId: string): Promise<RoleplayLorebookRecord[]> {
   return Object.values(await lorebookStore.read(config, workspaceId)).sort(
     (left, right) => right.updatedAt - left.updatedAt,
@@ -446,13 +452,6 @@ export async function writeLorebook(
   }));
 }
 
-/**
- * Remove a lorebook outright.
- *
- * Unlike a character, a book is not tombstoned: nothing renders past turns from
- * it, and a deleted book simply stops being injected. Its attachments die with
- * it, so no character is left pointing at a book that is not there.
- */
 export async function deleteLorebook(config: ServerConfig, workspaceId: string, lorebookId: string): Promise<boolean> {
   return lorebookStore.updateDocument(config, workspaceId, (current) => {
     if (!(lorebookId in current)) return { next: current, result: false };

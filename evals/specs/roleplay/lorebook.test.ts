@@ -84,8 +84,6 @@ describe("key matching", () => {
   });
 
   test("a regex key matches as a pattern, and a broken one falls back to a literal", () => {
-    // Falling back rather than dropping is deliberate: an entry that silently
-    // stops firing is the failure the trace exists to make visible.
     const books = [
       book({
         entries: [
@@ -103,8 +101,6 @@ describe("key matching", () => {
   });
 
   test("both sides of the conversation are scanned", () => {
-    // A place the character itself introduced is exactly what a lorebook entry
-    // exists to expand on.
     const books = [book({ entries: [entry({ keys: ["Ashfell"], content: "A mining town." })] })];
 
     const selection = selectLorebookEntries(books, [said("Where are we?"), said("Ashfell, and it's cold.", "assistant")]);
@@ -198,9 +194,6 @@ describe("recursive scanning", () => {
   });
 
   test("a self-referential book terminates at the round cap", () => {
-    // Two entries that name each other activate forever by construction. The cap
-    // is what makes this return at all; the budget would not, since a cycle of
-    // small entries never fills it.
     const chain = Array.from({ length: 10 }, (_, index) =>
       entry({ keys: [`link${index}`], content: `mentions link${index + 1}` }),
     );
@@ -245,7 +238,6 @@ describe("ordering and placement", () => {
     const selection = selectLorebookEntries(books, [said("a")]);
 
     expect(selection.before.map((injection) => injection.text)).toEqual(["ahead"]);
-    // An unset position is the spec's default, which is after the definition.
     expect(selection.after.map((injection) => injection.text)).toEqual(["behind", "unset"]);
   });
 
@@ -292,15 +284,12 @@ describe("budget", () => {
       entries: [entry({ keys: ["a"], content: "y".repeat(600) })],
     });
 
-    // 100 tokens is 400 characters here, so the 600-character entry does not fit.
     expect(selectLorebookEntries([small], [said("a")]).matches).toHaveLength(0);
     expect(100 * CHARS_PER_TOKEN).toBeLessThan(600);
     expect(selectLorebookEntries([greedy], [said("a")], { budgetChars: 100 }).matches).toHaveLength(0);
   });
 
   test("lorebook and memory together respect the shared ceiling", () => {
-    // Two individually reasonable budgets that sum past the ceiling would leave
-    // no room for the character, which is why they are ranked together.
     expect(LOREBOOK_BUDGET_CHARS + MEMORY_BUDGET_CHARS).toBeLessThanOrEqual(CONTEXTUAL_INJECTION_BUDGET_CHARS);
 
     const compiled = compilePrompt(CARD, PERSONA, {
@@ -321,7 +310,6 @@ describe("budget", () => {
     const constant = selection.after.find((injection) => injection.text === "world");
     const keyed = selection.after.find((injection) => injection.text === "keyed");
     expect(constant?.priority).toBeGreaterThan(keyed?.priority ?? 0);
-    // 1 is what a user-authored memory carries in `memory.ts`.
     expect(keyed?.priority).toBeGreaterThan(1);
   });
 });

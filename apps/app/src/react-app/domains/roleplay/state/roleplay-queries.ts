@@ -7,7 +7,9 @@ import type {
   RoleplayPersonaRecord,
   RoleplaySessionBinding,
   RoleplaySkillRef,
+  RoleplaySceneState,
   RoleplayTurnRecord,
+  SceneStatePatch,
 } from "@openwork/types/roleplay";
 
 import { classifyResolvedSkill, type RoleplayAttachedSkill } from "@/app/roleplay/skills-injection";
@@ -47,12 +49,6 @@ export function useRoleplayPersonas(endpoint: ResolvedWorkspaceEndpoint | null) 
   });
 }
 
-/**
- * Characters and personas share one JSON document per workspace, so a write
- * rewrites the whole thing. Refetching after every mutation keeps the list
- * honest rather than patching a local copy that could drift from what the
- * serializer actually persisted.
- */
 async function invalidateCharacters(queryClient: QueryClient, workspaceId: string) {
   await queryClient.invalidateQueries({ queryKey: roleplayCharactersQueryKey(workspaceId) });
 }
@@ -117,12 +113,6 @@ export function roleplaySessionQueryKey(workspaceId: string, sessionId: string) 
   return [...ROLEPLAY_QUERY_ROOT, "session", workspaceId, sessionId] as const;
 }
 
-/**
- * The binding decides whether a session is a roleplay session, which gates both
- * the composer's block triggers and the send path's agent pin. It is therefore
- * read on every session, so an unbound session must resolve to a cheap, cached
- * "no" rather than an error.
- */
 export function useRoleplaySessionBinding(endpoint: ResolvedWorkspaceEndpoint | null, sessionId: string | null) {
   return useQuery({
     queryKey: roleplaySessionQueryKey(endpoint?.workspaceId ?? "", sessionId ?? ""),
@@ -131,6 +121,40 @@ export function useRoleplaySessionBinding(endpoint: ResolvedWorkspaceEndpoint | 
     queryFn: async () => {
       if (!endpoint || !sessionId) return null;
       return endpoint.client.getRoleplaySessionBinding(endpoint.workspaceId, sessionId);
+    },
+  });
+}
+
+export function useUpdateRoleplaySceneState(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { sessionId: string; patch: SceneStatePatch }) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return endpoint.client.patchRoleplaySceneState(endpoint.workspaceId, input.sessionId, input.patch);
+    },
+    onSuccess: async (_result, input) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({
+          queryKey: roleplaySessionQueryKey(endpoint.workspaceId, input.sessionId),
+        });
+      }
+    },
+  });
+}
+
+export function useRestoreRoleplaySceneState(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { sessionId: string; snapshot: RoleplaySceneState }) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return endpoint.client.restoreRoleplaySceneState(endpoint.workspaceId, input.sessionId, input.snapshot);
+    },
+    onSuccess: async (_result, input) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({
+          queryKey: roleplaySessionQueryKey(endpoint.workspaceId, input.sessionId),
+        });
+      }
     },
   });
 }
@@ -165,15 +189,27 @@ export function useSaveRoleplayTurn(endpoint: ResolvedWorkspaceEndpoint | null) 
   });
 }
 
+export function useDeleteRoleplayTurns(endpoint: ResolvedWorkspaceEndpoint | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { sessionId: string; turnIds: string[] }) => {
+      if (!endpoint) throw new Error("No workspace is selected.");
+      return (await endpoint.client.deleteRoleplayTurns(endpoint.workspaceId, input.sessionId, input.turnIds)).deleted;
+    },
+    onSuccess: async (_deleted, input) => {
+      if (endpoint) {
+        await queryClient.invalidateQueries({
+          queryKey: roleplayTurnsQueryKey(endpoint.workspaceId, input.sessionId),
+        });
+      }
+    },
+  });
+}
+
 export function roleplayMemoriesQueryKey(workspaceId: string, characterId: string) {
   return [...ROLEPLAY_QUERY_ROOT, "memories", workspaceId, characterId] as const;
 }
 
-/**
- * Memories are read on every roleplay session, because they are compiled into
- * `system` on every turn. An unbound or memory-less character must therefore
- * resolve to a cheap cached empty list rather than to an error.
- */
 export function useRoleplayMemories(endpoint: ResolvedWorkspaceEndpoint | null, characterId: string | null) {
   return useQuery({
     queryKey: roleplayMemoriesQueryKey(endpoint?.workspaceId ?? "", characterId ?? ""),
@@ -225,11 +261,6 @@ export function roleplayLorebooksQueryKey(workspaceId: string) {
   return [...ROLEPLAY_QUERY_ROOT, "lorebooks", workspaceId] as const;
 }
 
-/**
- * Read on every roleplay session, because attached books are matched against the
- * transcript on every turn. An empty library must therefore be a cheap cached
- * empty list rather than an error, exactly as memories are.
- */
 export function useRoleplayLorebooks(endpoint: ResolvedWorkspaceEndpoint | null) {
   return useQuery({
     queryKey: roleplayLorebooksQueryKey(endpoint?.workspaceId ?? ""),
@@ -276,13 +307,6 @@ export function workspaceSkillBodyQueryKey(workspaceId: string, name: string) {
   return [...ROLEPLAY_QUERY_ROOT, "skill-body", workspaceId, name] as const;
 }
 
-/**
- * The skills a character can be given as writing guidance.
- *
- * `includeGlobal` is always on: the route resolves a name by running the same
- * directory walk and then `.find`, so omitting it would make every
- * globally-scoped skill invisible here and 404 on resolution.
- */
 export function useWorkspaceSkills(endpoint: ResolvedWorkspaceEndpoint | null) {
   return useQuery({
     queryKey: workspaceSkillsQueryKey(endpoint?.workspaceId ?? ""),
@@ -295,18 +319,6 @@ export function useWorkspaceSkills(endpoint: ResolvedWorkspaceEndpoint | null) {
   });
 }
 
-/**
- * Read the body of every attached skill, one cached query per name.
- *
- * The route runs a full `listSkills` walk per name, so this is deliberately
- * per-name and cached rather than batched: an attached set is small, and a
- * batch route is a server API to maintain for a cost nobody has measured.
- *
- * A ref that 404s, fails, or resolves in a different scope than it was attached
- * from comes back with a `status` rather than throwing. Those are terminal
- * outcomes, so `pending` clears — a failed fetch that counted as pending would
- * lock the conversation on a skill the user deleted.
- */
 export function useAttachedSkillBodies(endpoint: ResolvedWorkspaceEndpoint | null, refs: RoleplaySkillRef[]) {
   return useQueries({
     queries: refs.map((ref) => ({
@@ -346,14 +358,6 @@ export function useRoleplayRevisions(endpoint: ResolvedWorkspaceEndpoint | null,
   });
 }
 
-/**
- * Write the revision and the revised character together.
- *
- * They are two documents with no transaction between them, so the order matters:
- * the revision — the copy of the card as it was — is written first. A crash
- * between the two then leaves a harmless extra history entry rather than a
- * changed card with no way back.
- */
 export function useApplyRoleplayRevision(endpoint: ResolvedWorkspaceEndpoint | null) {
   const queryClient = useQueryClient();
   return useMutation({

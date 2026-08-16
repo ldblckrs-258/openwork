@@ -40,8 +40,6 @@ describe("parseLlmJson", () => {
   });
 
   test("output that does not match the schema fails rather than being coerced", () => {
-    // Generation, memory proposal, and card revision all feed this. Silently
-    // accepting a mis-shaped object would write malformed records to disk.
     const result = parseLlmJson('{"name":"Aria","traits":"wry"}', cardIdea);
 
     expect(result.ok).toBe(false);
@@ -50,8 +48,6 @@ describe("parseLlmJson", () => {
   });
 
   test("repair is bounded to a single round and then gives up", () => {
-    // The bound is the contract: a model can always emit something slightly more
-    // broken, so failure has to be reachable.
     const result = parseLlmJson("I could not produce JSON, sorry.", cardIdea);
 
     expect(result.ok).toBe(false);
@@ -75,8 +71,6 @@ describe("contextual injection budget", () => {
   });
 
   test("lowest priority is discarded first when the ceiling binds", () => {
-    // Card V2 rule: when the budget is exceeded, lower priority is discarded
-    // first. Insertion order still decides placement among survivors.
     const result = applyContextualInjectionBudget(
       [
         { text: "low-priority-entry", priority: 1 },
@@ -109,9 +103,6 @@ describe("contextual injection budget", () => {
 
 describe("framework-free layer", () => {
   test("no module under app/roleplay imports React", async () => {
-    // react-app/ARCHITECTURE.md establishes this boundary as a convention, and
-    // nothing lints it. Asserting it here is the only thing that actually holds
-    // the line.
     const entries = await readdir(roleplayDir);
     const sources = entries.filter((entry) => entry.endsWith(".ts") || entry.endsWith(".tsx"));
     expect(sources.length).toBeGreaterThan(0);

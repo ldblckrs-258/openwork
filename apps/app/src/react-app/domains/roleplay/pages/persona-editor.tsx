@@ -13,12 +13,6 @@ type PersonaEditorProps = {
   onSave: (persona: RoleplayPersonaRecord) => void;
 };
 
-/**
- * Who the user plays.
- *
- * The name here is what `{{user}}` resolves to in every card field, so an empty
- * one compiles the fallback word "User" into the character's own description.
- */
 export function PersonaEditor({ persona, saving, onSave }: PersonaEditorProps) {
   const [draft, setDraft] = React.useState(persona);
   const [error, setError] = React.useState("");

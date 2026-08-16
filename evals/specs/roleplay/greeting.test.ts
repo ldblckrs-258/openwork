@@ -64,8 +64,6 @@ describe("the request", () => {
   });
 
   test("the card's own greeting is sent for tone, and labelled as such", () => {
-    // Without the label a model treats it as the scene it must continue, and
-    // rewrites the same first meeting the memories exist to move past.
     const request = buildGreetingRequest({ card: CARD, persona: PERSONA, memories: [] });
 
     expect(request.text).toContain("for tone only");
@@ -73,9 +71,6 @@ describe("the request", () => {
   });
 
   test("memory is budgeted before it is sent, not after", () => {
-    // The generated opening has to come from the context the character will
-    // actually play with; an opening built from memories the turn then drops
-    // reads as the character forgetting mid-scene.
     const many = Array.from({ length: 80 }, (_, index) => memory(`Fact ${index} `.padEnd(200, "x")));
     const request = buildGreetingRequest({ card: CARD, persona: PERSONA, memories: many });
 
@@ -92,8 +87,6 @@ describe("reading the reply", () => {
   });
 
   test("a code fence around prose is unwrapped rather than rejected", () => {
-    // A model that fences its answer has still written a usable line; failing
-    // would send the user back to the button for a fix the app can make.
     expect(parseGeneratedGreeting('```\n"Still raining?"\n```')).toEqual({ ok: true, text: '"Still raining?"' });
   });
 
@@ -130,8 +123,6 @@ describe("which greeting a session opens with", () => {
   });
 
   test("a binding stored before greetings existed still parses", () => {
-    // Bindings are already on disk without this field. Failing to parse one
-    // would unbind a live conversation from its character.
     const legacy = roleplaySessionBindingSchema.parse({
       sessionId: "ses_1",
       characterId: "chr_1",

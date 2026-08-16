@@ -73,6 +73,15 @@ export type LocalPreferences = {
    * users are not surprised by system popups.
    */
   desktopNotifications: DesktopNotificationPreference;
+  /**
+   * Hides adult roleplay characters and controls. `null` means the user has
+   * never chosen, and resolves against the workspace's own characters — see
+   * `app/roleplay/safe-mode.ts`.
+   *
+   * Per device on purpose: it answers "could someone else be looking at this
+   * screen", which is a fact about the machine rather than about the workspace.
+   */
+  roleplaySafeMode: boolean | null;
 };
 
 type LocalContextValue = {
@@ -99,6 +108,7 @@ const INITIAL_PREFS: LocalPreferences = {
   hasCompletedOnboarding: false,
   analyticsEnabled: true,
   desktopNotifications: DEFAULT_DESKTOP_NOTIFICATION_PREFERENCE,
+  roleplaySafeMode: null,
 };
 
 function readPersisted<T>(key: string, fallback: T): T {

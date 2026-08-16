@@ -28,19 +28,6 @@ type CardDiffProps = {
   onClose: () => void;
 };
 
-/**
- * Review proposed card edits, one field at a time.
- *
- * Per-field rather than per-proposal because a suggestion that gets `personality`
- * right and `scenario` wrong is the common case, and an all-or-nothing patch
- * would lose the good half. Nothing is pre-selected: a dialog that arrives with
- * every box ticked is an approval step in name only, and this one rewrites the
- * character permanently.
- *
- * Both texts are shown in full rather than as a line diff. These are short prose
- * fields, and what matters is whether the new one reads as the same character —
- * a question a highlighted word-level diff actively obscures.
- */
 export function CardDiff({ open, proposals, saving, onApply, onClose }: CardDiffProps) {
   const [approved, setApproved] = React.useState<RevisableField[]>([]);
 

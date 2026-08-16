@@ -34,8 +34,6 @@ describe("threshold", () => {
   });
 
   test("the system string counts toward the estimate", () => {
-    // It is rebuilt and prepended on every single turn, so leaving it out would
-    // under-count the largest fixed cost in the request.
     const withoutSystem = decideCompaction(input({ transcriptChars: 200_000 }));
     const withSystem = decideCompaction(input({ transcriptChars: 200_000, systemChars: 100_000 }));
 
@@ -43,7 +41,6 @@ describe("threshold", () => {
   });
 
   test("a short conversation is never compacted, however long its messages", () => {
-    // Summarising two turns costs a model call and returns less than it removed.
     const decision = decideCompaction(input({ transcriptChars: 10_000_000, turnCount: MIN_TURNS_BEFORE_COMPACT - 1 }));
 
     expect(decision.shouldCompact).toBe(false);
@@ -60,9 +57,6 @@ describe("threshold", () => {
 
 describe("serialisation against reverts", () => {
   test("compaction refuses while a revert is in flight, even well over the threshold", () => {
-    // Compaction and the regenerate chain are independent calls against the same
-    // session with nothing else serialising them; a compaction landing mid-revert
-    // races the prompt that is about to replace the reverted tail.
     const decision = decideCompaction(input({ transcriptChars: 10_000_000, revertInFlight: true }));
 
     expect(decision.shouldCompact).toBe(false);
@@ -78,9 +72,6 @@ describe("serialisation against reverts", () => {
 
 describe("estimation", () => {
   test("tokens are estimated conservatively, not at prose density", () => {
-    // Roleplay text is dense in punctuation, quotation marks, and asterisks, and
-    // each tends to be its own token. A 4:1 prose assumption under-counts it, and
-    // under-counting is the failure that truncates a scene mid-conversation.
     const text = "x".repeat(3_200);
     const proseAssumption = text.length / 4;
 

@@ -38,8 +38,6 @@ describe("format detection", () => {
   });
 
   test("every format produces the same two facts", () => {
-    // The point of the fixtures: one world, five files. A conversion that only
-    // happens to work for the format it was written against is not a conversion.
     for (const payload of [SILLYTAVERN_WORLD, NOVELAI_LOREBOOK, AGNAI_MEMORY_BOOK, RISUAI_LOREBOOK, CARD_WITH_BOOK]) {
       expect(importOf(payload).book.entries.map((entry) => entry.content)).toEqual([
         EXPECTED_HARBOUR_CONTENT,
@@ -73,8 +71,6 @@ describe("SillyTavern world info", () => {
   });
 
   test("`disable` becomes `enabled`, inverted", () => {
-    // The one field where a straight copy would invert the author's intent and
-    // turn their whole book on.
     expect(imported.book.entries[0]?.enabled).toBe(true);
     expect(imported.book.entries[1]?.enabled).toBe(false);
   });
@@ -245,8 +241,6 @@ describe("the import gate", () => {
 
     const selection = selectLorebookEntries([record], [{ role: "user", text: "down at the docks" }]);
 
-    // The second entry is `constant` but disabled in the fixture, so exactly one
-    // fires — which is what the source file says should happen.
     expect(selection.matches.map((match) => match.text)).toEqual([EXPECTED_HARBOUR_CONTENT]);
   });
 

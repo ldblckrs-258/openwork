@@ -8,16 +8,6 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { planSwipe } from "../../../apps/app/src/app/roleplay/swipe.ts";
 import type { RoleplayTurnRecord } from "../../../packages/types/src/roleplay.ts";
 
-/**
- * Regenerate, asserted against the engine that destroys the thing being
- * regenerated.
- *
- * The unit specs cover the decisions; these cover the claims that only the real
- * engine can settle, and that `reports/swipe-semantics-spike.md` found the plan
- * had wrong. A mock provider stands in for the model so replies are identifiable
- * (`REPLY-1`, `REPLY-2`, …) and no credentials are needed.
- */
-
 const OPENCODE_BIN = join(homedir(), ".opencode", "bin", "opencode");
 const PROVIDER_PORT = 4935;
 const ENGINE_PORT = 4936;
@@ -148,9 +138,7 @@ beforeAll(async () => {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
       if ((await fetch(`http://127.0.0.1:${ENGINE_PORT}/app`)).ok) break;
-    } catch {
-      // not up yet
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }, 120_000);
@@ -163,8 +151,6 @@ afterAll(async () => {
 
 describe.skipIf(!available)("regenerate against the real engine", () => {
   test("reverting at a reply moves the cursor to the user message, not the reply", async () => {
-    // This is why swipe cannot "keep the user message and discard the reply" by
-    // reverting, and therefore why the user's text has to be re-sent.
     const sid = await seedSession();
     const before = await messages(sid);
     const reply = lastOf(before, "assistant");
@@ -194,8 +180,6 @@ describe.skipIf(!available)("regenerate against the real engine", () => {
   });
 
   test("regenerating with empty parts would blank the user's message", async () => {
-    // Documents why `planSwipe` carries `userText`. If the engine ever starts
-    // rejecting empty parts this fails loudly rather than leaving dead defence.
     const sid = await seedSession();
     const before = await messages(sid);
 
@@ -224,9 +208,6 @@ describe.skipIf(!available)("regenerate against the real engine", () => {
   });
 
   test("a failed regenerate destroys the reply too, and unrevert cannot bring it back", async () => {
-    // The finding that decided the design. Rolling back by restoring the revert
-    // cursor is impossible: there is no cursor and no message left by the time
-    // the failure surfaces.
     const sid = await seedSession();
     const before = await messages(sid);
     const original = textOf(lastOf(before, "assistant"));

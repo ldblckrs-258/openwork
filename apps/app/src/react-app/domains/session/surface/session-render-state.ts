@@ -22,6 +22,25 @@ export function resolveRenderedSessionSnapshot(input: {
   return null;
 }
 
+export function hideRoleplaySceneToolParts(messages: UIMessage[], toolName: string): UIMessage[] {
+  return messages
+    .map((message) => {
+      const parts = message.parts.filter((part) => !(part.type === "dynamic-tool" && part.toolName === toolName));
+      return parts.length === message.parts.length ? message : { ...message, parts };
+    })
+    .filter((message) => message.parts.some((part) => part.type !== "step-start"));
+}
+
+export function lastAssistantTurnFailed(messages: UIMessage[]): boolean {
+  const last = messages.at(-1);
+  if (!last || last.role !== "assistant") return false;
+  return last.parts.some(
+    (part) =>
+      part.type === "text" &&
+      Boolean((part.providerMetadata?.opencode as { sessionError?: unknown } | undefined)?.sessionError),
+  );
+}
+
 export function deriveRenderedSessionMessages(input: {
   transcriptState: UIMessage[] | null | undefined;
   snapshot: OpenworkSessionSnapshot | null | undefined;
@@ -33,9 +52,6 @@ export function deriveRenderedSessionMessages(input: {
     ? snapshotToUIMessages(input.snapshot)
     : [];
 
-  // Render the server snapshot as the history floor and layer live stream
-  // updates on top. During prompt submission the live cache can briefly contain
-  // only the new turn; it must not replace the older persisted transcript.
   const messages = snapshotMessages.length > 0
     ? mergeSnapshotAndLiveMessages(snapshotMessages, liveMessages, { appendLiveOnlyMessages: true })
     : liveMessages;

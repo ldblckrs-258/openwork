@@ -34,11 +34,15 @@ import {
 import { buildOpenworkEnvRuntimeKey } from "@/app/lib/openwork-env-runtime";
 import type {
   RoleplayBlock,
+  RoleplaySceneState,
   RoleplaySessionSettings,
   RoleplaySkillRef,
   RoleplayTurnRecord,
+  SceneStatePatch,
 } from "@openwork/types/roleplay";
 import { buildRoleplayTurn, type RoleplayTurn } from "@/app/roleplay/turn";
+import { sendCarriesSafeword } from "@/app/roleplay/safeword";
+import { resolveSafeword } from "@/app/roleplay/session-settings";
 import type { RoleplayTurnDiagnostics } from "@/react-app/domains/roleplay/components/session-settings-panel";
 import {
   applySwipeResult,
@@ -47,6 +51,12 @@ import {
   repairAfterFailedSwipe,
   selectAlternative,
 } from "@/app/roleplay/swipe";
+import { planSceneRewind } from "@/app/roleplay/revert-scene";
+import {
+  buildOpeningSceneRequest,
+  openingSceneState,
+  parseGeneratedOpeningScene,
+} from "@/app/roleplay/opening-scene";
 import { compileBlocks } from "@/app/roleplay/blocks";
 import { lorebooksForCharacter, MAX_SCAN_DEPTH, toScanMessages } from "@/app/roleplay/lorebook";
 import {
@@ -77,13 +87,16 @@ import {
   useApplyRoleplayRevision,
   useAttachedSkillBodies,
   useBindRoleplaySession,
+  useDeleteRoleplayTurns,
   useRoleplayLorebooks,
   useRoleplayMemories,
   useRoleplayPersonas,
   useRoleplaySessionBinding,
   useRoleplayTurns,
   useSaveRoleplayMemory,
+  useRestoreRoleplaySceneState,
   useSaveRoleplayTurn,
+  useUpdateRoleplaySceneState,
 } from "@/react-app/domains/roleplay/state/roleplay-queries";
 import { CardDiff } from "@/react-app/domains/roleplay/components/card-diff";
 import { MemoryReview } from "@/react-app/domains/roleplay/components/memory-review";
@@ -376,6 +389,8 @@ async function persistRoleplayTurn(input: {
   turnId: string;
   userText: string;
   blocks: RoleplayBlock[];
+  /** The scene as it stood before this turn was dispatched; what a regenerate rewinds to. */
+  sceneStateBefore?: RoleplaySceneState;
 }) {
   if (!input.endpoint) return;
   try {
@@ -390,6 +405,7 @@ async function persistRoleplayTurn(input: {
       blocks: input.blocks,
       alternatives: [],
       activeAlternative: 0,
+      ...(input.sceneStateBefore ? { sceneStateBefore: input.sceneStateBefore } : {}),
       createdAt: Date.now(),
     });
   } catch (error) {
@@ -579,6 +595,8 @@ function turnDiagnostics(turn: RoleplayTurn): RoleplayTurnDiagnostics {
     skills: turn.skills,
     systemChars: turn.composed.chars,
     truncated: turn.composed.truncated,
+    sceneStateChars: turn.sceneState.chars,
+    sceneRecordCount: turn.sceneState.recordCount,
   };
 }
 
@@ -768,6 +786,76 @@ export function SessionRoute() {
     roleplayBindingQuery.data?.binding?.characterId ?? null,
   );
   const roleplayLorebooksQuery = useRoleplayLorebooks(selectedWorkspaceEndpoint);
+  const updateSceneState = useUpdateRoleplaySceneState(selectedWorkspaceEndpoint);
+  const restoreSceneStateMutation = useRestoreRoleplaySceneState(selectedWorkspaceEndpoint);
+  /**
+   * The scene as it stood when the current turn was dispatched.
+   *
+   * Held per session in a ref rather than in state: nothing renders from it, and
+   * it has to be readable from inside a send closure that was built before the
+   * turn started. Keyed by session because a user can send in one conversation
+   * and switch to another while it generates.
+   *
+   * This exists because `promptAsync` returns long before generation finishes, so
+   * the send path's own `catch` can never see a failure during streaming. By the
+   * time anything knows the turn failed, the only record of what the scene looked
+   * like beforehand is this.
+   */
+  const preTurnSceneRef = useRef<Map<string, RoleplaySceneState | undefined>>(new Map());
+  /**
+   * The one place a scene snapshot is written back.
+   *
+   * `swipe.ts` decides which snapshot; this performs it. That split is what keeps
+   * the keyboard swipe, the button swipe, the failure path and the regenerate
+   * from diverging — not that they share a function, but that each is handed a
+   * decision it cannot act on any other way.
+   *
+   * `undefined` means leave the scene alone, and never means reset. Turns and
+   * alternatives written before this existed carry no snapshot, and a
+   * conversation that is mid-scene when this ships must not be undressed by an
+   * upgrade.
+   *
+   * Declared up here rather than beside the other roleplay handlers because the
+   * regenerate handler calls it, and that runs earlier in the file.
+   */
+  const restoreSceneState = useCallback(async (snapshot: RoleplaySceneState | undefined) => {
+    if (!snapshot || !selectedSessionId) return;
+    try {
+      await restoreSceneStateMutation.mutateAsync({ sessionId: selectedSessionId, snapshot });
+    } catch (error) {
+      // Surfaced rather than swallowed: a scene that failed to roll back is one
+      // every later turn compiles from, and the drift is otherwise silent.
+      setSceneError("The scene could not be put back to where this reply left it.");
+      console.warn("[roleplay] scene restore failed", error);
+    }
+  }, [restoreSceneStateMutation, selectedSessionId]);
+  /**
+   * Write the safeword freeze on or off.
+   *
+   * Declared beside `restoreSceneState` and for the same reason: the send path
+   * calls it, and that runs earlier in the file than the roleplay handlers.
+   *
+   * Setting it throws on failure rather than warning, because the caller is the
+   * send path and it has to decide whether to dispatch a turn it could not
+   * freeze. Clearing it is the user's own action and reports itself.
+   */
+  const setRoleplayDeEscalated = useCallback(async (deEscalated: boolean) => {
+    const binding = roleplayBindingQuery.data?.binding;
+    if (!binding) return;
+    await bindRoleplaySession.mutateAsync({
+      ...binding,
+      settings: { ...binding.settings, deEscalated },
+    });
+  }, [bindRoleplaySession, roleplayBindingQuery.data]);
+  /**
+   * The last thing the scene route refused, held so the panel can say it.
+   *
+   * Kept in memory rather than on the binding, for the same reason the pending
+   * greeting is: it describes one attempt in this window, and a refusal that
+   * outlived the app would be reported against a scene that has since moved on.
+   */
+  const [sceneError, setSceneError] = useState<string | null>(null);
+  useEffect(() => setSceneError(null), [selectedSessionId]);
   const roleplaySkillRefs = roleplayBindingQuery.data?.character?.attachedSkills ?? EMPTY_SKILL_REFS;
   const roleplaySkills = useAttachedSkillBodies(selectedWorkspaceEndpoint, roleplaySkillRefs);
   /**
@@ -809,6 +897,10 @@ export function SessionRoute() {
       // is a skill set that can differ between a reply and its own regenerate.
       skills: roleplaySkills.skills,
       skillsPending: roleplaySkills.pending,
+      ...(binding.sceneState ? { sceneState: binding.sceneState } : {}),
+      hardLimits: character.hardLimits,
+      nsfw: character.nsfw,
+      ...(character.preferredModel ? { preferredModel: character.preferredModel } : {}),
       settings: binding.settings,
       characterId: binding.characterId,
     };
@@ -823,6 +915,100 @@ export function SessionRoute() {
   ]);
   const roleplayTurnsQuery = useRoleplayTurns(selectedWorkspaceEndpoint, roleplaySurface ? selectedSessionId : null);
   const saveRoleplayTurn = useSaveRoleplayTurn(selectedWorkspaceEndpoint);
+  const deleteRoleplayTurns = useDeleteRoleplayTurns(selectedWorkspaceEndpoint);
+  /**
+   * The scene as it stood before a revert rewound it, per session.
+   *
+   * Held so "restore reverted messages" can put it back. Without it the two
+   * halves of one undo disagree: the transcript comes back and the scene stays
+   * where the revert left it, so every later turn compiles a scene the restored
+   * replies never produced — the same drift the rewind exists to prevent, only
+   * pointing the other way.
+   *
+   * A ref rather than state because nothing renders from it, and keyed by
+   * session because a user can revert in one conversation and switch away before
+   * deciding to undo it.
+   */
+  const preRewindSceneRef = useRef<Map<string, RoleplaySceneState>>(new Map());
+  /**
+   * Put the scene, and the turn records, back to before everything a revert
+   * discards.
+   *
+   * Called by every destructive path that is not the swipe: the Revert button,
+   * the generic regenerate, and edit-and-resend. The swipe has its own decision
+   * in `swipe.ts` because it knows exactly which turn it is replacing; this one
+   * has to work it out from the transcript, which is why it reads the *whole*
+   * message list rather than the tail the swipe path uses.
+   *
+   * Returns the snapshot it wrote, because the send path has to compile the
+   * replacement prompt against it. Reading `roleplaySurface.sceneState` after
+   * this has run would compile exactly what the rewind just undid.
+   *
+   * Scoped to the visible session. Turns, binding and scene are all read from
+   * queries keyed on `selectedSessionId`, so answering for another session would
+   * mean rewinding one conversation's scene from another's records.
+   */
+  const rewindSceneForRevert = useCallback(async (
+    sessionId: string,
+    boundaryMessageId: string,
+  ): Promise<RoleplaySceneState | undefined> => {
+    if (!opencodeClient || !roleplaySurface || sessionId !== selectedSessionId) return undefined;
+    try {
+      const messages = unwrap(await opencodeClient.session.messages({ sessionID: sessionId })) ?? [];
+      const rewind = planSceneRewind({
+        messages: messages.map((entry) => ({ id: entry.info.id, role: entry.info.role })),
+        boundaryMessageId,
+        turns: roleplayTurnsQuery.data ?? [],
+      });
+      if (rewind.restore) {
+        // Read from the binding rather than from `roleplaySurface`, and read
+        // before the write: the tool wrote this from the engine's own process, so
+        // React state can be a turn behind the scene an undo would have to put
+        // back.
+        const live = (await roleplayBindingQuery.refetch()).data?.binding?.sceneState;
+        if (live) preRewindSceneRef.current.set(sessionId, live);
+        await restoreSceneStateMutation.mutateAsync({ sessionId, snapshot: rewind.restore });
+      }
+      if (rewind.discardedTurnIds.length > 0) {
+        await deleteRoleplayTurns.mutateAsync({ sessionId, turnIds: rewind.discardedTurnIds });
+      }
+      return rewind.restore;
+    } catch (error) {
+      // Said out loud rather than swallowed. A revert whose scene did not roll
+      // back leaves the discarded replies steering every later turn through
+      // `system`, and nothing about the transcript would show it.
+      setSceneError("The messages were reverted, but the scene could not be put back to where they started.");
+      console.warn("[roleplay] scene rewind failed", error);
+      return undefined;
+    }
+  }, [
+    deleteRoleplayTurns,
+    opencodeClient,
+    restoreSceneStateMutation,
+    roleplayBindingQuery,
+    roleplaySurface,
+    roleplayTurnsQuery.data,
+    selectedSessionId,
+  ]);
+  /**
+   * Undo a rewind, when the revert that caused it is itself undone.
+   *
+   * The turn records are not brought back with it, and that is deliberate: they
+   * were deleted, and inventing replacements would mint records whose message
+   * ids the engine re-minted anyway. The scene is the part that silently steers
+   * later turns; a missing turn record only costs the swipe history.
+   */
+  const unwindSceneRewind = useCallback(async (sessionId: string) => {
+    const snapshot = preRewindSceneRef.current.get(sessionId);
+    if (!snapshot) return;
+    preRewindSceneRef.current.delete(sessionId);
+    try {
+      await restoreSceneStateMutation.mutateAsync({ sessionId, snapshot });
+    } catch (error) {
+      setSceneError("The messages were restored, but the scene could not be moved forward with them.");
+      console.warn("[roleplay] scene rewind could not be undone", error);
+    }
+  }, [restoreSceneStateMutation]);
   const saveRoleplayMemory = useSaveRoleplayMemory(selectedWorkspaceEndpoint);
   const [memoryProposals, setMemoryProposals] = useState<MemoryProposal[]>([]);
   const [memoryReviewOpen, setMemoryReviewOpen] = useState(false);
@@ -1495,7 +1681,7 @@ export function SessionRoute() {
             onExtractMemories: () => void handleExtractMemories(),
             onProposeRevision: () => void handleProposeRevision(),
             onSwipe: () => void handleRoleplaySwipe(),
-            onSelectAlternative: (offset: number) => handleRoleplaySelectAlternative(offset),
+            onSelectAlternative: (offset: number) => void handleRoleplaySelectAlternative(offset),
             onBranch: (messageId?: string) => void handleRoleplayBranch(messageId),
             onSaveStorySoFar: (value: string) => void handleSaveStorySoFar(value),
             personas: roleplayPersonasQuery.data ?? [],
@@ -1507,6 +1693,11 @@ export function SessionRoute() {
               roleplayDiagnostics && roleplayDiagnostics.sessionId === selectedSessionId
                 ? roleplayDiagnostics.diagnostics
                 : null,
+            sceneBusy: updateSceneState.isPending,
+            sceneError,
+            onPatchScene: (patch: SceneStatePatch) => void handlePatchSceneState(patch),
+            onDismissSceneError: () => setSceneError(null),
+            onAssistantTurnComplete: (outcome: { failed: boolean }) => handleRoleplayTurnComplete(outcome),
           }
         : null,
       developerMode: false,
@@ -1564,9 +1755,28 @@ export function SessionRoute() {
         // Per-conversation model memory: a session that picked its own model
         // sends with it (and its variant) instead of the global default.
         const sessionModelSelection = getSessionModelSelection(targetSessionId);
-        const sendModel = sessionModelSelection?.model ?? local.prefs.defaultModel;
+        // The character's preferred model sits between the two: a session that
+        // picked its own still wins, and the workspace default is what a
+        // character without a preference falls back to. It is here rather than
+        // in the character record's defaults because hosted providers refuse
+        // this content outright, and without it the first adult character a user
+        // creates appears simply broken.
+        const sendModel = sessionModelSelection?.model ?? roleplaySurface?.preferredModel ?? local.prefs.defaultModel;
         const sendVariant = sessionModelSelection ? sessionModelSelection.variant : modelVariantValue;
-        if (!sessionModelSelection && selectedModelUnavailable) throw new Error("Selected model is unavailable. Choose another model before sending.");
+        // The guard is about the workspace default, so it applies only when the
+        // send is actually using it. A character with a preferred model is not
+        // blocked by a default it never reads.
+        if (!sessionModelSelection && !roleplaySurface?.preferredModel && selectedModelUnavailable) {
+          throw new Error("Selected model is unavailable. Choose another model before sending.");
+        }
+
+        // A regenerate and an edit-and-resend both revert before they prompt, and
+        // the replacement has to compile against the scene as it stood before the
+        // reply it is replacing — not the one that reply produced. Held here
+        // rather than read back through the binding query, which will not have
+        // refetched by the time the prompt closure below runs.
+        let sceneAfterRewind: RoleplaySceneState | undefined;
+        let sceneWasRewound = false;
 
         return submitWithCloudMcpReadiness({
           // Temporarily bypass the pre-send Cloud MCP gate: it blocks every
@@ -1579,6 +1789,12 @@ export function SessionRoute() {
               revert: async (messageId) => {
                 const reverted = await revertSession(opencodeClient, targetSessionId, messageId);
                 applySessionRevert(selectedWorkspaceId, reverted);
+                sceneAfterRewind = await rewindSceneForRevert(targetSessionId, messageId);
+                // The flag, not the snapshot, is what says the scene moved.
+                // `undefined` is a legitimate answer — there was nothing to
+                // rewind to — and it has to keep meaning "leave the scene alone"
+                // rather than "the scene is now empty".
+                sceneWasRewound = sceneAfterRewind !== undefined;
               },
               prompt: async () => {
                 captureAnalyticsEvent("task_message_sent", {
@@ -1674,6 +1890,48 @@ export function SessionRoute() {
                       { role: "user" as const, text },
                     ]
                   : [];
+                // Matched against the raw message *and* the director text,
+                // before anything else looks at either. The composer has already
+                // split them by the time a send has them, and which half a
+                // distressed user typed the word into is not predictable.
+                //
+                // The freeze is written before the turn is dispatched and
+                // awaited, because it is what makes the *next* send safe too —
+                // and it is deliberately not read back through the binding
+                // query, which will not have refetched by the time this closure
+                // builds the prompt.
+                const safewordUsed = Boolean(
+                  roleplaySurface &&
+                    sendCarriesSafeword(
+                      { text, directorText: draft.directorText },
+                      resolveSafeword(roleplaySurface.settings.safeword),
+                    ),
+                );
+                if (safewordUsed && !roleplaySurface?.settings.deEscalated) {
+                  try {
+                    await setRoleplayDeEscalated(true);
+                  } catch (error) {
+                    // Said out loud. The turn still goes out de-escalated, but a
+                    // freeze that did not persist means the send after this one
+                    // would carry the scene again, and the user has no way to
+                    // see that from the reply.
+                    setSceneError(
+                      "The scene was stopped for this reply, but the pause could not be saved. Check the session settings before continuing.",
+                    );
+                    console.warn("[roleplay] safeword freeze failed to persist", error);
+                  }
+                }
+                const roleplaySettings = roleplaySurface
+                  ? safewordUsed
+                    ? { ...roleplaySurface.settings, deEscalated: true }
+                    : roleplaySurface.settings
+                  : undefined;
+                // The snapshot the rewind just wrote, when there was one.
+                // `roleplaySurface.sceneState` is React state and still holds
+                // the scene the reverted replies produced, so compiling from it
+                // would re-read the discarded turns as history — a counter
+                // climbing one step per regenerate with nothing ever erroring.
+                const sceneForSend = sceneWasRewound ? sceneAfterRewind : roleplaySurface?.sceneState;
                 const roleplayTurn = roleplaySurface
                   ? buildRoleplayTurn({
                       card: roleplaySurface.card,
@@ -1683,11 +1941,14 @@ export function SessionRoute() {
                       // A send and its own regenerate composing different system
                       // strings reads as the model ignoring the user's notes.
                       storySoFar: roleplaySurface.storySoFar,
+                      ...(sceneForSend ? { sceneState: sceneForSend } : {}),
                       memories: roleplaySurface.memories,
                       lorebooks: roleplaySurface.lorebooks,
                       skills: roleplaySurface.skills,
+                      hardLimits: roleplaySurface.hardLimits,
+                      nsfw: roleplaySurface.nsfw,
                       scanMessages,
-                      settings: roleplaySurface.settings,
+                      settings: roleplaySettings,
                       directorText: draft.directorText,
                       envContext: envSystemContext ?? null,
                     })
@@ -1697,6 +1958,13 @@ export function SessionRoute() {
                     sessionId: targetSessionId,
                     diagnostics: turnDiagnostics(roleplayTurn),
                   });
+                  // Captured before dispatch, because after it there is no way
+                  // back: `promptAsync` returns in milliseconds with nothing
+                  // written, so a failure during streaming surfaces long after
+                  // this closure is gone. Recorded even when the scene is
+                  // undefined — the key's presence is what says a turn is in
+                  // flight for this session.
+                  preTurnSceneRef.current.set(targetSessionId, sceneForSend);
                 }
                 const result = await opencodeClient.session.promptAsync({
                   sessionID: targetSessionId,
@@ -1713,14 +1981,25 @@ export function SessionRoute() {
                 if (result.error) {
                   throw new Error(serializeSDKError(result.error));
                 }
-                if (roleplayTurn && draft.blocks?.length) {
+                // Every roleplay turn, not only the ones carrying director
+                // blocks. The record is what a revert reads to answer "what was
+                // the scene before this message", so gating it on blocks left an
+                // ordinary reply — the overwhelming majority of them — with
+                // nothing to rewind to, and the scene stayed where the deleted
+                // replies put it.
+                if (roleplayTurn) {
                   void persistRoleplayTurn({
                     endpoint: selectedWorkspaceEndpoint,
                     listMessages: async (sessionId) => (await opencodeClient.session.messages({ sessionID: sessionId, limit: 4 })).data,
                     sessionId: targetSessionId,
                     turnId: createTurnId(Date.now(), Math.random().toString(36).slice(2, 8)),
                     userText: text,
-                    blocks: draft.blocks,
+                    blocks: draft.blocks ?? [],
+                    // What a regenerate of this turn has to run against. Stored
+                    // on the turn rather than looked up later: turns are keyed by
+                    // `turnId` and the engine re-mints message ids on every
+                    // swipe, so there is no stable predecessor to walk back to.
+                    ...(sceneForSend ? { sceneStateBefore: sceneForSend } : {}),
                   });
                 }
                 // Remember what this conversation used last so returning to it
@@ -1734,6 +2013,9 @@ export function SessionRoute() {
                   await unrevertSession(opencodeClient, targetSessionId);
                 } finally {
                   applySessionUnrevert(selectedWorkspaceId, targetSessionId);
+                  // The replacement was never dispatched, so the scene the
+                  // rewind undid belongs to messages that are coming back.
+                  await unwindSceneRewind(targetSessionId);
                 }
               },
               onUnrevertError: (error) => console.warn("[edit-resend] rollback failed", error),
@@ -1785,6 +2067,10 @@ export function SessionRoute() {
           // Stamp the revert cursor into the local caches so the transcript
           // rewinds immediately instead of waiting for a full reload.
           applySessionRevert(selectedWorkspaceId, reverted);
+          // After the engine call, never before: a rewind performed against a
+          // revert that then failed would undress a character in a conversation
+          // whose messages are all still there.
+          await rewindSceneForRevert(targetSessionId, messageId);
           return true;
         } catch (error) {
           console.warn("[revert] failed", error);
@@ -1798,6 +2084,9 @@ export function SessionRoute() {
         try {
           await unrevertSession(opencodeClient, targetSessionId);
           applySessionUnrevert(selectedWorkspaceId, targetSessionId);
+          // The messages are back, so the scene the revert rewound has to come
+          // with them.
+          await unwindSceneRewind(targetSessionId);
           return true;
         } catch (error) {
           console.warn("[unrevert] failed", error);
@@ -1877,6 +2166,8 @@ export function SessionRoute() {
     memoryBusy,
     revisionBusy,
     bindRoleplaySession.isPending,
+    updateSceneState.isPending,
+    sceneError,
     // The handlers themselves are declared below this memo, so they cannot be
     // listed here. They are reached through these values instead: every one of
     // them changes when a roleplay interaction starts or finishes.
@@ -2329,12 +2620,64 @@ export function SessionRoute() {
       const parsed = parseGeneratedGreeting(raw);
       if (!parsed.ok) {
         // Falling back to the card's greeting, which is what unblocking reveals.
+        // The authored scene is the right one for that greeting, so the opening
+        // scene is not regenerated either — it would describe a line nobody read.
         toast.error("Could not write an opening", {
           id: ROLEPLAY_GREETING_TOAST_ID,
           description: `${parsed.error} The character's usual greeting is being used instead.`,
         });
         return;
       }
+
+      // Before the greeting is written, not after. `greetingPending` hides the
+      // greeting as well as blocking the composer, so revealing the line first
+      // would leave a window in which the user can send a turn against the
+      // authored scene — and the restore would then land on top of whatever the
+      // state tool wrote during it.
+      //
+      // Only for an adult character, and only when the author wrote a scene to
+      // begin with: the same two gates `bindSession` applies before it seeds one.
+      // A character nobody tracks state for does not gain a state panel because
+      // its opening was generated.
+      const authored = character.character.sceneRecords;
+      if (character.character.nsfw && authored.length > 0) {
+        try {
+          const sceneRaw = await handleRunGeneration(
+            buildOpeningSceneRequest({
+              card: character.character.card,
+              persona: persona?.persona ?? { name: "", description: "" },
+              ...(character.character.charSubstitutionName
+                ? { charName: character.character.charSubstitutionName }
+                : {}),
+              memories: memories.memories,
+              greeting: parsed.text,
+              authored,
+            }),
+            sessionId,
+          );
+          const scene = parseGeneratedOpeningScene(sceneRaw);
+          // An empty result is a legitimate answer — "this opening establishes
+          // nothing trackable" — but acting on it would replace the author's
+          // scene with nothing, which is worse than a scene that is merely
+          // slightly wrong. The authored records stay.
+          if (scene.ok && scene.records.length > 0) {
+            await endpoint.client.restoreRoleplaySceneState(
+              endpoint.workspaceId,
+              sessionId,
+              openingSceneState(scene.records, Date.now()),
+            );
+          } else if (!scene.ok) {
+            console.warn("[roleplay] could not read an opening scene", scene.error);
+          }
+        } catch (error) {
+          // Deliberately not surfaced and deliberately not fatal. The session is
+          // usable with the authored scene — it is what a card-greeting session
+          // gets — and a toast here would report a failure about a feature the
+          // user did not ask for by name on top of the greeting they did.
+          console.warn("[roleplay] could not write an opening scene", error);
+        }
+      }
+
       await bindRoleplaySession.mutateAsync({ ...binding, greeting: parsed.text });
     } catch (error) {
       toast.error("Could not write an opening", {
@@ -2392,11 +2735,29 @@ export function SessionRoute() {
       const plan = planSwipe({
         turn,
         currentReply: { text: replyText, messageId: reply.info.id },
+        // The live scene, read before anything resets it. Capture then restore,
+        // never the other way round: an alternative is captured once and never
+        // re-derived, so restoring first would stamp the pre-turn scene onto the
+        // reply that changed it and break swiping back to it permanently.
+        ...(roleplaySurface.sceneState ? { sceneState: roleplaySurface.sceneState } : {}),
         now: Date.now(),
       });
       capturedTurn = plan.turn;
       // Persisted first. After the revert this reply no longer exists anywhere.
       await saveRoleplayTurn.mutateAsync(plan.turn);
+
+      // Awaited, and before the prompt is rebuilt. `buildRoleplayTurn` is pure
+      // over its input and does not fetch, so a stale read here is compiled
+      // straight into the retry with nothing downstream to correct it — the
+      // discarded attempt's consequences read back as history, one step per
+      // swipe, silently.
+      await restoreSceneState(plan.restore);
+      // The snapshot just written, not `roleplaySurface.sceneState`. That is
+      // React state and still holds the scene the discarded reply produced, so
+      // reading it below would compile exactly what the restore just undid. Only
+      // the records reach the prompt, so the snapshot's older revision number
+      // does not matter here.
+      const sceneForRetry = plan.restore ?? roleplaySurface.sceneState;
 
       await abortSessionSafe(opencodeClient, selectedSessionId, selectedWorkspaceRoot || undefined);
       const reverted = await revertSession(opencodeClient, selectedSessionId, plan.revertMessageId);
@@ -2414,9 +2775,12 @@ export function SessionRoute() {
         persona: roleplaySurface.persona,
         greeting: roleplaySurface.greeting,
         storySoFar: roleplaySurface.storySoFar,
+        ...(sceneForRetry ? { sceneState: sceneForRetry } : {}),
         memories: roleplaySurface.memories,
         lorebooks: roleplaySurface.lorebooks,
         skills: roleplaySurface.skills,
+        hardLimits: roleplaySurface.hardLimits,
+        nsfw: roleplaySurface.nsfw,
         // The transcript as it stood before the revert, plus the message being
         // replayed: a regenerate has to match the same entries the original send
         // did, or the character loses world knowledge it just used.
@@ -2446,7 +2810,10 @@ export function SessionRoute() {
           sessionID: selectedSessionId,
           // Never `parts: []` — the engine accepts it and blanks the user's message.
           parts: [{ type: "text", text: plan.userText }],
-          model: sessionModelSelection?.model ?? local.prefs.defaultModel ?? undefined,
+          // The same three-step fallback the send path uses. A regenerate that
+          // picked a different model than the send would read as the character
+          // changing between a reply and its own retry.
+          model: sessionModelSelection?.model ?? roleplaySurface.preferredModel ?? local.prefs.defaultModel ?? undefined,
           ...(swipeVariant ? { variant: swipeVariant } : {}),
           ...rebuilt.prompt,
         }),
@@ -2459,6 +2826,12 @@ export function SessionRoute() {
       const settled = unwrap(await opencodeClient.session.messages({ sessionID: selectedSessionId, limit: 4 })) ?? [];
       const newUser = [...settled].reverse().find((entry) => entry.info.role === "user");
       if (newUser) {
+        // Read back rather than taken from `roleplaySurface`. The tool wrote from
+        // the engine's own process while this turn was in flight, so React state
+        // is a turn behind — and an alternative captured against it would archive
+        // a scene its own text never produced.
+        const refreshed = await roleplayBindingQuery.refetch();
+        const producedScene = refreshed.data?.binding?.sceneState;
         await saveRoleplayTurn.mutateAsync(
           applySwipeResult(plan.turn, {
             userMessageId: newUser.info.id,
@@ -2467,6 +2840,7 @@ export function SessionRoute() {
               .map((part) => part.text)
               .join(""),
             replyMessageId: regenerated.info.id,
+            ...(producedScene ? { sceneState: producedScene } : {}),
             now: Date.now(),
           }),
         );
@@ -2474,6 +2848,10 @@ export function SessionRoute() {
       await refreshRouteState();
     } catch (error) {
       const repair = repairAfterFailedSwipe(capturedTurn ?? turn);
+      // The prompt was already dispatched, so the tool may have committed
+      // against a reply that never arrived. Put the scene back before anything
+      // else, or the discarded attempt's mutations outlive it.
+      await restoreSceneState(repair.restore);
       if (repair.danglingUserMessage) {
         toast.error("Could not regenerate", {
           description: "The previous reply was discarded by the engine and there was no saved copy to restore.",
@@ -2509,11 +2887,21 @@ export function SessionRoute() {
     selectedWorkspaceRoot,
   ]);
 
-  const handleRoleplaySelectAlternative = useCallback((offset: number) => {
+  /**
+   * Navigate to another archived reply, and take its scene with it.
+   *
+   * The restore is awaited before the turn is saved, so the state and the text on
+   * screen never disagree even briefly. Ordering the other way would leave a
+   * window where a send could compile the previous alternative's scene against
+   * the newly shown reply.
+   */
+  const handleRoleplaySelectAlternative = useCallback(async (offset: number) => {
     if (!latestRoleplayTurn) return;
-    const next = selectAlternative(latestRoleplayTurn, offset);
-    if (next !== latestRoleplayTurn) void saveRoleplayTurn.mutateAsync(next);
-  }, [latestRoleplayTurn, saveRoleplayTurn]);
+    const selection = selectAlternative(latestRoleplayTurn, offset);
+    if (!selection.changed) return;
+    await restoreSceneState(selection.restore);
+    await saveRoleplayTurn.mutateAsync(selection.turn);
+  }, [latestRoleplayTurn, restoreSceneState, saveRoleplayTurn]);
 
   /**
    * Branch a roleplay conversation.
@@ -2792,6 +3180,48 @@ export function SessionRoute() {
     if (!binding) return;
     await bindRoleplaySession.mutateAsync({ ...binding, storySoFar: value });
   }, [bindRoleplaySession, roleplayBindingQuery.data]);
+
+  /**
+   * A hand edit to the scene, through the route the model's tool also writes to.
+   *
+   * The refusal list is surfaced rather than swallowed. The one that matters is a
+   * stale revision — a turn landed while the user was typing — and reverting the
+   * panel silently would look like the edit simply did not take.
+   */
+  const handlePatchSceneState = useCallback(async (patch: SceneStatePatch) => {
+    if (!selectedSessionId) return;
+    setSceneError(null);
+    try {
+      const result = await updateSceneState.mutateAsync({ sessionId: selectedSessionId, patch });
+      if (result.rejected.length > 0) setSceneError(result.rejected.join(" "));
+    } catch (error) {
+      setSceneError(error instanceof Error ? error.message : "The scene could not be changed.");
+    }
+  }, [selectedSessionId, updateSceneState]);
+
+  /**
+   * Refetch the binding once a turn ends, because the tool wrote server-side.
+   *
+   * The binding query is deliberately stale-tolerant — it is read on every
+   * session, bound or not — so waiting for it to expire would leave the panel a
+   * turn behind the conversation it is describing.
+   *
+   * A turn the engine reported as failed is rolled back to what the scene was
+   * before it: `promptAsync` had already returned, so the tool may have committed
+   * against a reply that never arrived. A turn the *user* stopped is deliberately
+   * not rolled back — an aborted reply keeps its partial text in the transcript,
+   * and undoing the scene it describes would leave the two disagreeing.
+   */
+  const handleRoleplayTurnComplete = useCallback((outcome: { failed: boolean }) => {
+    if (!roleplayBindingQuery.data?.binding || !selectedSessionId) return;
+    const before = preTurnSceneRef.current.get(selectedSessionId);
+    preTurnSceneRef.current.delete(selectedSessionId);
+    if (outcome.failed && before) {
+      void restoreSceneState(before);
+      return;
+    }
+    void roleplayBindingQuery.refetch();
+  }, [restoreSceneState, roleplayBindingQuery, selectedSessionId]);
 
   const handleChangeRoleplaySettings = useCallback(async (settings: RoleplaySessionSettings) => {
     const binding = roleplayBindingQuery.data?.binding;

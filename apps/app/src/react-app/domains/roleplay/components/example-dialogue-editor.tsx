@@ -15,14 +15,6 @@ type ExampleDialogueEditorProps = {
   onChange: (mesExample: string) => void;
 };
 
-/**
- * Example dialogue is a sequence of exchanges, not free text.
- *
- * A single textarea makes the user type `<START>` separators by hand, and a
- * malformed one fails silently — the model simply sees one run-on exchange
- * instead of several examples. Editing blocks and writing the separators here
- * removes the failure mode rather than validating it after the fact.
- */
 export function ExampleDialogueEditor({
   value,
   onChange,

@@ -16,14 +16,6 @@ type StorySoFarProps = {
   onProposeRevision: () => void;
 };
 
-/**
- * The continuity notes, and the two session-level actions that read the whole
- * conversation.
- *
- * Both actions are buttons rather than anything automatic. Each costs a
- * completion over the entire transcript, and running them unasked spends the
- * user's money on a review dialog they may not want.
- */
 export function StorySoFar({
   value,
   saving,

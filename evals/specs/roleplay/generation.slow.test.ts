@@ -16,14 +16,9 @@ import {
 } from "../../../apps/app/src/app/roleplay/generation/prompts.ts";
 import { validateCharacter } from "../../../apps/app/src/app/roleplay/character-draft.ts";
 
-/**
- * The Phase 7 gate: character generation is an untrusted prompt like any other.
- *
- * Asserted against what the engine actually assembles, using the real binary and
- * the real shipped agent config, with a local OpenAI-compatible server standing
- * in for the provider. The unit spec proves `buildCreatorRequest` *carries* the
- * denial; only this one proves the engine honours it once the request is sent.
- */
+// Character generation is an untrusted prompt like any other. The unit spec
+// proves `buildCreatorRequest` *carries* the denial; only this one proves the
+// engine honours it once the request is sent.
 
 const OPENCODE_BIN = join(homedir(), ".opencode", "bin", "opencode");
 const PROVIDER_PORT = 4933;
@@ -47,7 +42,6 @@ let workspace = "";
 let engine: ChildProcess | undefined;
 let providerServer: Server | undefined;
 let captures: { tools: string[]; messages: { role: string; content: string }[] }[] = [];
-/** What the mock provider answers with. Set per test. */
 let reply = "OK";
 
 function startProvider(): Promise<void> {
@@ -115,7 +109,6 @@ async function waitForEngine(): Promise<void> {
       const response = await fetch(`http://127.0.0.1:${ENGINE_PORT}/app`);
       if (response.ok) return;
     } catch {
-      // not up yet
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -145,10 +138,6 @@ type RunResult = {
   text: string;
 };
 
-/**
- * Send one generation request the way the route does: create a scratch session,
- * prompt once, read the reply text, delete the session.
- */
 async function run(body: Record<string, unknown>): Promise<RunResult> {
   captures = [];
   const session = (await api("/session", { method: "POST", body: { title: "Character generation" } })) as { id: string };
@@ -252,9 +241,6 @@ describe.skipIf(!available)("character generation on the wire", () => {
   });
 
   test("a reply travels through the engine and parses into a saveable character", async () => {
-    // End to end: what the provider emitted is what `parseGeneratedCard` reads.
-    // The unit spec feeds the parser directly and so cannot catch the engine
-    // reshaping, wrapping, or trimming the text on its way back.
     reply = JSON.stringify(GENERATED_CARD);
     const result = await run(wire(buildCreatorRequest({ idea: "a night archivist" })));
 
@@ -266,8 +252,6 @@ describe.skipIf(!available)("character generation on the wire", () => {
   });
 
   test("a model that answers with prose instead of a card fails cleanly", async () => {
-    // The failure the user is most likely to hit on a weak model. It must surface
-    // as a failed generation, never as a blank character.
     reply = "I'd be happy to help you build a character!";
     const result = await run(wire(buildCreatorRequest({ idea: "a night archivist" })));
 

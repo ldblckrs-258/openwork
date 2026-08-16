@@ -15,9 +15,6 @@ function skill(overrides: Partial<RoleplayAttachedSkill> = {}): RoleplayAttached
 
 describe("frontmatter", () => {
   test("a leading YAML block is stripped, the body is not", () => {
-    // Every SKILL.md carries name/description frontmatter written for the skill
-    // catalog. Injected verbatim it is noise the character would read as
-    // instructions about itself.
     const body = stripSkillFrontmatter("---\nname: slow-burn\ndescription: pacing\n---\n\nLet scenes breathe.");
 
     expect(body).toBe("Let scenes breathe.");
@@ -36,9 +33,6 @@ describe("frontmatter", () => {
 
 describe("every lookup outcome resolves, so the composer never deadlocks", () => {
   test("a ref that looked up nothing resolves as missing rather than staying pending", () => {
-    // The composer is gated on skills still being in flight. If a 404 counted as
-    // in flight, one deleted skill would lock the conversation forever and the
-    // user's only recourse would be detaching a skill they cannot see.
     expect(classifyResolvedSkill({ name: "gone", scope: "project" }, null)).toEqual({
       name: "gone",
       scope: "project",
@@ -62,9 +56,6 @@ describe("every lookup outcome resolves, so the composer never deadlocks", () =>
 
 describe("resolution failures are reported, never substituted", () => {
   test("a ref that resolves to no skill is skipped and reported", () => {
-    // Skills come and go on disk; a deleted one is not an error, but a prompt
-    // that silently lost its guidance is indistinguishable from the model
-    // changing its mind.
     const selection = selectSkillInjections([skill({ name: "gone", status: "missing" }), skill()]);
 
     expect(selection.unresolved).toEqual(["gone"]);
@@ -72,10 +63,6 @@ describe("resolution failures are reported, never substituted", () => {
   });
 
   test("a ref that resolves in a different scope than it was attached from is unresolved", () => {
-    // `listSkills` puts every ancestor's project directories ahead of the global
-    // ones and dedupes first-wins, so a plugin install or a checked-out repo can
-    // take over a global name. Running guidance the user did not choose is worse
-    // than running none.
     const selection = selectSkillInjections([skill({ name: "narration", scope: "global", status: "shadowed" })]);
 
     expect(selection.shadowed).toEqual(["narration"]);
@@ -112,12 +99,6 @@ describe("caps and budget", () => {
   });
 
   test("a body over the per-body cap is truncated and reported, not dropped whole", () => {
-    // Against the *shipped* constants, with no budget override. The two are
-    // deliberately unequal — `MAX_SKILL_BODY_CHARS` above `SKILL_BUDGET_CHARS` —
-    // and an earlier version cut to the per-body cap first and then tested that
-    // against the budget, so every truncated body was also dropped and the
-    // truncation path could never be reached in production. Overriding
-    // `budgetChars` here is what hid that: this test must not.
     const selection = selectSkillInjections([skill({ body: "x".repeat(MAX_SKILL_BODY_CHARS + 500) })]);
 
     expect(selection.truncated).toEqual(["slow-burn"]);
@@ -127,9 +108,6 @@ describe("caps and budget", () => {
   });
 
   test("truncated and dropped are disjoint: a name is cut, or absent, never both", () => {
-    // The panel lists both, so a name in each would render twice with
-    // contradictory reasons — "cut to fit" beside "over the budget" — for a
-    // skill that contributed nothing.
     const selection = selectSkillInjections([
       skill({ name: "first", body: "x".repeat(MAX_SKILL_BODY_CHARS + 500) }),
       skill({ name: "second", body: "y".repeat(1_000) }),
@@ -164,9 +142,6 @@ describe("caps and budget", () => {
   });
 
   test("attach order decides how much of each skill survives", () => {
-    // The user chose the order, so it is the order that decides. A long skill
-    // early leaving a short one behind it nothing is a reportable outcome, not
-    // a bug — the panel names it.
     const forward = selectSkillInjections(
       [skill({ name: "a", body: "x".repeat(120) }), skill({ name: "b", body: "y".repeat(80) })],
       { budgetChars: 100 },

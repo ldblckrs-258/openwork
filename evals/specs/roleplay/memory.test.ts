@@ -50,8 +50,6 @@ describe("memory text", () => {
   });
 
   test("an over-long entry is cut to the cap", () => {
-    // Capping the entry, not only the total, is what keeps recall broad. One
-    // essay-length memory would otherwise consume most of the budget alone.
     const long = createMemory({ id: "m", characterId: "c", text: "x".repeat(5_000), source: "user", now: 1 });
 
     expect(long.text.length).toBe(MAX_MEMORY_CHARS);
@@ -67,10 +65,6 @@ describe("memory text", () => {
 
 describe("the injection budget", () => {
   test("memory cannot exceed its share of the prompt", () => {
-    // The central tension of the feature: memory grows every session while the
-    // character definition does not. Without a ceiling the remembered facts
-    // eventually outweigh the character, which reads as the character going flat
-    // rather than as a bug anyone reports.
     const many = Array.from({ length: 200 }, (_, index) =>
       memory({ id: `mem_${index}`, text: `Fact number ${index}. `.padEnd(200, "x"), createdAt: index }),
     );
@@ -83,8 +77,6 @@ describe("the injection budget", () => {
   });
 
   test("what the user wrote outranks what the model proposed", () => {
-    // Under pressure the entries a person authored are the ones they will notice
-    // missing, and they are the ones least likely to be wrong.
     const filler = Array.from({ length: 30 }, (_, index) =>
       memory({ id: `ex_${index}`, source: "extracted", text: "y".repeat(300), createdAt: 100 + index }),
     );
@@ -96,8 +88,6 @@ describe("the injection budget", () => {
   });
 
   test("kept memories reach the prompt oldest first", () => {
-    // The character reads its own history in the order it happened, not in the
-    // order the ranking happened to produce.
     const selection = selectMemories([
       memory({ id: "late", text: "Later.", createdAt: 30 }),
       memory({ id: "early", text: "Earlier.", createdAt: 10 }),
@@ -113,9 +103,6 @@ describe("the injection budget", () => {
 
 describe("memory in the compiled prompt", () => {
   test("an approved memory is visible to the character on a later turn", () => {
-    // The whole feature in one assertion: a fact approved in one session reaches
-    // `system` in the next, because it is compiled from the character's store
-    // rather than from the conversation it was learned in.
     const turn = buildRoleplayTurn({
       card: CARD,
       persona: PERSONA,
@@ -128,8 +115,6 @@ describe("memory in the compiled prompt", () => {
   });
 
   test("a character with no memories compiles no memory section at all", () => {
-    // Without this the assertion above is unfalsifiable — an always-present
-    // heading would match whatever the store held.
     const turn = buildRoleplayTurn({ card: CARD, persona: PERSONA, memories: [], envContext: null });
 
     expect(turn.prompt.system).not.toContain("Remembered Details");
@@ -147,9 +132,6 @@ describe("memory in the compiled prompt", () => {
 
 describe("extraction proposals", () => {
   test("a proposal is not a record, so it cannot be persisted as it stands", () => {
-    // The structural half of "nothing persists unreviewed": what the parser
-    // returns has no id and no character, so the only route to the store is
-    // `createMemory`, which the review dialog calls and the extractor does not.
     const parsed = parseMemoryProposals(JSON.stringify({ memories: [{ text: "Wren works nights." }] }), []);
 
     expect(parsed.ok).toBe(true);
@@ -159,8 +141,6 @@ describe("extraction proposals", () => {
   });
 
   test("the record schema has no pending state to forget to check", () => {
-    // A `status: "pending"` field would make unreviewed persistence a bug someone
-    // could write. There is no such field, so it is not expressible.
     const parsed = roleplayMemoryRecordSchema.safeParse({
       ...memory(),
       status: "pending",
@@ -171,8 +151,6 @@ describe("extraction proposals", () => {
   });
 
   test("a proposal the character already remembers is dropped", () => {
-    // Extraction runs over overlapping transcripts, so without this the review
-    // list fills with things the user already approved and the new ones get lost.
     const parsed = parseMemoryProposals(
       JSON.stringify({ memories: [{ text: "wren works nights at the harbour." }, { text: "Wren fears the water." }] }),
       [memory({ text: "Wren works nights at the harbour." })],
@@ -192,8 +170,6 @@ describe("extraction proposals", () => {
   });
 
   test("an empty proposal list is a valid answer, not a failure", () => {
-    // Most conversations teach the character nothing new. Treating that as an
-    // error would train users to ignore the result.
     const parsed = parseMemoryProposals(JSON.stringify({ memories: [] }), []);
 
     expect(parsed.ok).toBe(true);
@@ -253,8 +229,6 @@ describe("the extraction call", () => {
   });
 
   test("only the recent tail of a long conversation is sent", () => {
-    // A whole long transcript costs more than the feature is worth and re-proposes
-    // the same early facts on every run.
     const messages = Array.from({ length: 100 }, (_, index) => ({
       role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
       text: `line ${index}`,

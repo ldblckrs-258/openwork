@@ -25,14 +25,6 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-/**
- * What this character knows across sessions.
- *
- * Everything on this page is already approved — proposals never reach the store,
- * so there is no pending state to render here. Editing rewrites the text the
- * model will read verbatim, which is why the entry is a plain textarea rather
- * than anything that reformats what the user typed.
- */
 export function CharacterMemories({ endpoint, character, onBack }: CharacterMemoriesProps) {
   const memories = useRoleplayMemories(endpoint, character.id);
   const saveMemory = useSaveRoleplayMemory(endpoint);
@@ -129,9 +121,6 @@ export function CharacterMemories({ endpoint, character, onBack }: CharacterMemo
       )}
 
       {selection.dropped > 0 ? (
-        // Said out loud rather than silently trimmed at send time: a user who
-        // adds a thirtieth memory and sees no change in behaviour would otherwise
-        // conclude the feature does not work.
         <p className="text-muted-foreground text-sm">
           {selection.dropped} {selection.dropped === 1 ? "memory does" : "memories do"} not fit the prompt budget and
           {selection.dropped === 1 ? " is" : " are"} not being sent. Delete or shorten some to make room.

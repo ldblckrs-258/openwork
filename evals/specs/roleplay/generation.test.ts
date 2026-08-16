@@ -36,9 +36,6 @@ function response(payload: unknown): string {
 
 describe("parsing a generated card", () => {
   test("a complete payload becomes a card the editor would accept", () => {
-    // The generator's output has to clear the same bar a hand-authored character
-    // does, or the editor opens on a card that cannot be saved and the user is
-    // left fixing the model's omissions by hand.
     const parsed = parseGeneratedCard(response(COMPLETE));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -49,8 +46,6 @@ describe("parsing a generated card", () => {
   });
 
   test("prose and a code fence around the JSON are repaired rather than rejected", () => {
-    // Models wrap JSON in explanation often enough that rejecting it would fail
-    // generations that actually succeeded.
     const parsed = parseGeneratedCard(
       "Here is the character you asked for:\n\n```json\n" + response(COMPLETE) + "\n```\n\nLet me know what you think.",
     );
@@ -60,10 +55,6 @@ describe("parsing a generated card", () => {
   });
 
   test("a payload with no name or no greeting is rejected, not defaulted", () => {
-    // Defaulting these two would produce a card that saves and then misbehaves:
-    // `{{char}}` compiles to the literal word "Character", and the conversation
-    // opens on silence. Both are the model's job, so a miss is a failed
-    // generation rather than a form for the user to finish.
     expect(parseGeneratedCard(response({ ...COMPLETE, name: "  " })).ok).toBe(false);
     expect(parseGeneratedCard(response({ ...COMPLETE, first_mes: "" })).ok).toBe(false);
   });
@@ -116,9 +107,6 @@ describe("parsing a generated card", () => {
 
 describe("example dialogue", () => {
   test("exchanges are counted by the separator the prompt document asks for", () => {
-    // The prompt document and `splitExampleMessages` agree on `<START>`. If one
-    // side is edited without the other, example dialogue silently compiles as a
-    // single run-on exchange and the character loses its voice samples.
     expect(characterCreatorPrompt).toContain("<START>");
     expect(countExampleExchanges(COMPLETE.mes_example)).toBe(2);
     expect(countExampleExchanges("")).toBe(0);
@@ -137,9 +125,6 @@ describe("the interview", () => {
   });
 
   test("a repeated id is dropped rather than failing the whole round", () => {
-    // Ids only key answers back to questions. Two questions sharing one would
-    // make the second overwrite the first's answer, but the round itself is fine
-    // and the user has already paid for the call.
     const parsed = parseInterviewQuestions(
       response({
         questions: [
@@ -158,8 +143,6 @@ describe("the interview", () => {
   });
 
   test("unanswered questions are dropped instead of being sent back blank", () => {
-    // An echoed question with an empty answer reads as "the user has no opinion
-    // on this", which is not what leaving a field blank means.
     const questions = [
       { id: "setting", question: "Where does this happen?", suggestions: [] },
       { id: "tone", question: "Warm or hostile?", suggestions: [] },

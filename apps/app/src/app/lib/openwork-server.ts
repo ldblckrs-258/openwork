@@ -12,8 +12,11 @@ import type {
   RoleplayLorebookRecord,
   RoleplayMemoryRecord,
   RoleplayPersonaRecord,
+  RoleplaySceneState,
   RoleplaySessionBinding,
   RoleplayTurnRecord,
+  SceneRecord,
+  SceneStatePatch,
 } from "@openwork/types/roleplay";
 import {
   AGENT_CONTEXT_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
@@ -1636,6 +1639,34 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(binding.sessionId)}`,
         { token, hostToken, method: "PUT", body: { binding }, timeoutMs: timeouts.config },
       ),
+    /**
+     * The same route the model's tool writes through, so a hand edit is checked
+     * by the same rules and serialized against the same queue.
+     *
+     * The patch carries the revision the panel was showing. A turn that landed
+     * in between therefore comes back refused, which the panel can say out loud,
+     * rather than overwriting a change the user has not seen yet.
+     */
+    patchRoleplaySceneState: (workspaceId: string, sessionId: string, patch: SceneStatePatch) =>
+      requestJson<{ applied: SceneRecord[]; removed: string[]; rejected: string[]; revision: number; noop: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}/scene-state`,
+        { token, hostToken, method: "POST", body: { patch }, timeoutMs: timeouts.config },
+      ),
+    /**
+     * Put the scene back to a snapshot, on the same route and the same queue.
+     *
+     * Carries no revision. A restore is not computed against the state it
+     * replaces — it is the app undoing a write on the user's behalf, and the
+     * whole reason it exists is that the state it is replacing is one nobody
+     * wants. A revision check here would refuse exactly the case it is for.
+     */
+    restoreRoleplaySceneState: (workspaceId: string, sessionId: string, snapshot: RoleplaySceneState) =>
+      requestJson<{ applied: SceneRecord[]; removed: string[]; rejected: string[]; revision: number; noop: boolean }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}/scene-state`,
+        { token, hostToken, method: "POST", body: { restore: snapshot }, timeoutMs: timeouts.config },
+      ),
     deleteRoleplaySessionBinding: (workspaceId: string, sessionId: string) =>
       requestJson<{ cleared: boolean }>(
         baseUrl,
@@ -1653,6 +1684,12 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         baseUrl,
         `/workspace/${encodeURIComponent(workspaceId)}/roleplay/turns/${encodeURIComponent(turn.turnId)}`,
         { token, hostToken, method: "PUT", body: { turn }, timeoutMs: timeouts.config },
+      ),
+    deleteRoleplayTurns: (workspaceId: string, sessionId: string, turnIds: string[]) =>
+      requestJson<{ deleted: number }>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/roleplay/sessions/${encodeURIComponent(sessionId)}/turns/delete`,
+        { token, hostToken, method: "POST", body: { turnIds }, timeoutMs: timeouts.config },
       ),
     listRoleplayMemories: (workspaceId: string, characterId: string) =>
       requestJson<{ memories: RoleplayMemoryRecord[] }>(

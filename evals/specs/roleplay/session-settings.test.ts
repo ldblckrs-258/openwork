@@ -51,8 +51,6 @@ function memory(id: string, text: string): RoleplayMemoryRecord {
 
 describe("resolving a conversation's settings", () => {
   test("an untouched setting resolves to the app's default rather than a stored copy", () => {
-    // Stored defaults would freeze at the value they had the day the session
-    // started, so a later change to the default would never reach it.
     const resolved = resolveSessionSettings({ disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" });
 
     expect(resolved.memoryBudgetChars).toBe(MEMORY_BUDGET_CHARS);
@@ -62,7 +60,6 @@ describe("resolving a conversation's settings", () => {
   });
 
   test("a budget outside the range snaps to the edge instead of failing a send", () => {
-    // These arrive from a field the user is typing in mid-conversation.
     const high = resolveSessionSettings({
       memoryBudgetChars: MAX_SOURCE_BUDGET_CHARS + 50_000,
       disabledLorebookIds: [],
@@ -90,7 +87,6 @@ describe("resolving a conversation's settings", () => {
   });
 
   test("a binding stored before settings existed still parses", () => {
-    // Failing to parse one would unbind a live conversation from its character.
     const legacy = roleplaySessionBindingSchema.parse({
       sessionId: "ses_1",
       characterId: "chr_1",
@@ -105,8 +101,6 @@ describe("resolving a conversation's settings", () => {
   });
 
   test("a book attached after the conversation started is live by default", () => {
-    // Off-ids are stored rather than on-ids, so attaching a book means what it
-    // says without every existing session having to opt in.
     const books = [book("lore_1"), book("lore_2")];
 
     expect(activeLorebooks(books, ["lore_1"]).map((record) => record.id)).toEqual(["lore_2"]);
@@ -131,7 +125,6 @@ describe("what the settings change about a turn", () => {
 
     expect(turn.prompt.system).not.toContain("HARBOUR-FACT");
     expect(turn.prompt.system).toContain("OTHER-FACT");
-    // A book that is not scanned leaves no trace line either: it took no part.
     expect(turn.lorebook.trace.some((line) => line.bookId === "lore_1")).toBe(false);
   });
 
@@ -164,8 +157,6 @@ describe("what the settings change about a turn", () => {
   });
 
   test("the two budgets no longer compete: a large memory allowance evicts no lore", () => {
-    // This is the point of setting them independently. Under one shared ceiling
-    // a memory-heavy character would silently lose its world knowledge.
     const books = [book("lore_1", { entries: [entry("a", ["harbour"], "HARBOUR-FACT")] })];
     const memories = Array.from({ length: 40 }, (_, index) =>
       memory(`mem_${index}`, `Remembered detail ${index} `.padEnd(300, "x")),
@@ -238,9 +229,6 @@ describe("what the settings change about a turn", () => {
   });
 
   test("the turn stays a pure function of its settings, which is what a regenerate replays", () => {
-    // A regenerate rebuilds from the live settings. Identical settings and
-    // transcript must compile identical bytes, or a swipe would drift for
-    // reasons the user never changed.
     const input = {
       card: CARD,
       persona: PERSONA,

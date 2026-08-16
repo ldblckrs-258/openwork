@@ -16,20 +16,6 @@ import { sanitizeCard, type CardSanitizeReport } from "../sanitize-card.js";
  * keys, and the extensions allow-list.
  */
 
-/**
- * The flat field set the generator returns.
- *
- * Deliberately not the card envelope. Asking a model to emit `spec` and
- * `spec_version` wastes tokens on two constants and gives it a way to fail; the
- * envelope is written here instead.
- *
- * `name` and `first_mes` are the only required fields, matching the bar
- * `validateCharacter` enforces on a hand-authored card: a nameless character
- * compiles the fallback word "Character" into its own description, and a
- * character with no greeting opens the conversation on silence. Everything else
- * defaults, so one missing optional field costs a repair round rather than the
- * whole generation.
- */
 export const generatedCardSchema = z.object({
   name: z.string().trim().min(1),
   description: z.string().default(""),
@@ -63,14 +49,6 @@ function toCardEnvelope(generated: GeneratedCard): unknown {
   };
 }
 
-/**
- * Parse a generation response into a sanitized card.
- *
- * Two failure modes are distinguished on purpose. Unparseable or schema-invalid
- * output is the model's fault and is worth retrying; a payload the sanitizer
- * rejects is a card this app will not hold, and retrying the same prompt is
- * unlikely to change that.
- */
 export function parseGeneratedCard(raw: string): ParsedGeneratedCard {
   const parsed = parseLlmJson(raw, generatedCardSchema);
   if (!parsed.ok) return { ok: false, error: parsed.error, raw };
@@ -101,14 +79,6 @@ export type ParsedInterviewQuestions =
   | { ok: true; questions: InterviewQuestion[]; repaired: boolean }
   | { ok: false; error: string; raw: string };
 
-/**
- * Parse the interview response.
- *
- * Duplicate ids are dropped rather than rejected: they are a labelling mistake,
- * not a broken interview, and the ids are only used to key answers back to their
- * questions. Rejecting the whole round for one repeated slug would cost the user
- * a call they already paid for.
- */
 export function parseInterviewQuestions(raw: string): ParsedInterviewQuestions {
   const parsed = parseLlmJson(raw, interviewQuestionsSchema);
   if (!parsed.ok) return { ok: false, error: parsed.error, raw };
@@ -123,14 +93,6 @@ export function parseInterviewQuestions(raw: string): ParsedInterviewQuestions {
   return { ok: true, questions, repaired: parsed.repaired };
 }
 
-/**
- * Wrap a generated card as an unsaved character record.
- *
- * `authored`, not a third provenance. The record only ever reaches the store by
- * way of the editor, so by the time it is saved the user has read every field
- * and can have changed any of them — the same reasoning that makes a duplicated
- * import `authored`.
- */
 export function generatedCharacterRecord(card: CharacterCardV2, id: string, now: number): RoleplayCharacterRecord {
   return {
     id,
@@ -138,12 +100,14 @@ export function generatedCharacterRecord(card: CharacterCardV2, id: string, now:
     charSubstitutionName: card.data.name,
     source: "authored",
     attachedSkills: [],
+    nsfw: false,
+    sceneRecords: [],
+    hardLimits: [],
     createdAt: now,
     updatedAt: now,
   };
 }
 
-/** How many `<START>`-separated exchanges the example dialogue actually contains. */
 export function countExampleExchanges(mesExample: string): number {
   return splitExampleMessages(mesExample).length;
 }

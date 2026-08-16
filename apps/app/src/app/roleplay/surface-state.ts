@@ -2,72 +2,29 @@ import type {
   CharacterCardV2,
   RoleplayLorebookRecord,
   RoleplayMemoryRecord,
+  RoleplayModelRef,
   RoleplayPersona,
+  RoleplaySceneState,
   RoleplaySessionSettings,
 } from "@openwork/types/roleplay";
 
 import type { RoleplayAttachedSkill } from "./skills-injection.js";
 
-/**
- * What the chat surface needs to know to render a session as roleplay.
- *
- * Its presence *is* the gate: a session with no binding gets `null` here and
- * takes the ordinary chat path through the composer and the send path alike.
- */
 export type RoleplaySurfaceState = {
   characterName: string;
   card: CharacterCardV2;
   persona: RoleplayPersona;
-  /**
-   * The card's opening line.
-   *
-   * The engine has no way to write an assistant message, so this is rendered by
-   * the client as the transcript's first entry rather than existing in session
-   * history. It is included in the compiled prompt so the model still knows what
-   * it opened with.
-   */
   greeting: string;
-  /** User-authored continuity notes; compiled into `system` on every turn. */
   storySoFar: string;
-  /** Approved memories for this character; budgeted, then compiled into `system`. */
   memories: RoleplayMemoryRecord[];
-  /**
-   * Set while the opening line is being written for this session.
-   *
-   * Blocks the composer and replaces the greeting with an indicator: the card's
-   * greeting is about to be replaced, so showing it and accepting a reply
-   * against it would start the scene twice.
-   */
   greetingPending: boolean;
-  /**
-   * Every lorebook attached to this character, including ones this conversation
-   * has switched off. The settings panel needs the switched-off ones to offer
-   * them back; `buildRoleplayTurn` does the filtering.
-   */
   lorebooks: RoleplayLorebookRecord[];
-  /**
-   * Every attached skill whose ref has been resolved, including ones this
-   * conversation has switched off and ones that resolved to nothing — the panel
-   * needs the first to offer them back and the second to report them.
-   * `buildRoleplayTurn` does the filtering, exactly as it does for lorebooks.
-   */
   skills: RoleplayAttachedSkill[];
-  /**
-   * Set while an attached skill's body is still being read.
-   *
-   * Skills deliberately do *not* inherit the `?? []` empty-while-loading
-   * behaviour memories and lorebooks have. A missing fact costs a fact; missing
-   * style guidance costs the character's voice between turn 1 and turn 2, which
-   * the user would attribute to the model.
-   *
-   * Pending means *in flight*, and only that. A ref that failed, 404'd, or
-   * resolved to a shadowed scope is resolved-as-unresolved: it is reported and
-   * the composer opens. Treating a terminal outcome as pending would lock the
-   * conversation forever on a skill the user deleted.
-   */
   skillsPending: boolean;
-  /** This conversation's overrides, unresolved: `undefined` still means "app default". */
   settings: RoleplaySessionSettings;
-  /** Which character the session is bound to, so a memory approved mid-chat knows where to go. */
+  sceneState?: RoleplaySceneState;
+  hardLimits: string[];
+  nsfw: boolean;
+  preferredModel?: RoleplayModelRef;
   characterId: string;
 };

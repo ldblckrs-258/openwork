@@ -54,6 +54,7 @@ import {
   type RoleplaySwipeControls,
 } from "@/components/chat/message-list-provider"
 import { ArtifactList } from "@/components/chat/artifact"
+import { SceneChangeRail } from "@/components/chat/scene-change-rail"
 import { TaskSuggestions } from "@/components/chat/task-suggestions"
 import {
   DescriptiveButtonContent,
@@ -1002,14 +1003,6 @@ function RoleplayAlternativeActions({ controls }: { controls: RoleplaySwipeContr
   )
 }
 
-/**
- * Re-run the turn that produced this reply.
- *
- * Present on every session, not only roleplay. In roleplay with a stored turn
- * record it goes through the swipe path, which archives the reply it replaces
- * so the arrows above can step back to it; everywhere else it reverts to the
- * user message and sends it again, exactly as edit-and-resend does.
- */
 function RegenerateAction({
   swipe,
   assistantMessageId,
@@ -1050,7 +1043,8 @@ function MessageGroup({
   messages,
   isStreaming,
 }: AssistantMessageGroupProps) {
-  const { onRevertToUserMessage, onForkAtMessage, onRegenerate, showThinking, roleplaySwipe } = useMessageList()
+  const { onRevertToUserMessage, onForkAtMessage, onRegenerate, showThinking, roleplaySwipe, sceneChangesByMessage } =
+    useMessageList()
   const lastItem = items[items.length - 1]
   // Branch/revert must target a real server-side message id. Synthetic
   // client-side messages (e.g. session errors) don't exist on the server and
@@ -1215,6 +1209,9 @@ function MessageGroup({
         )
       ) : null}
       {renderItems(proseItems, stepItems.length, collapseSteps)}
+      {!isLiveGroup && lastRealItem ? (
+        <SceneChangeRail records={sceneChangesByMessage.get(lastRealItem.message.id) ?? []} />
+      ) : null}
       {/* Paper artifact strip: one FILES row per turn, at the end. */}
       <ArtifactList
         messages={items.map((item) => item.message)}

@@ -45,13 +45,17 @@ import type {
   CloudMcpSubmissionGateState,
   CloudMcpSubmissionResult,
 } from "@/react-app/domains/connections/cloud-mcp-submit-readiness";
+import { ROLEPLAY_STATE_TOOL, type SceneStatePatch } from "@openwork/types/roleplay";
+import { sceneChangesByMessage as sceneChangesByMessageId } from "@/app/roleplay/scene-changes";
 import { compileDraftText } from "@/app/roleplay/blocks";
 import { activeAlternativeText } from "@/app/roleplay/swipe";
+import { sessionHasSceneState } from "@/app/roleplay/scene-state";
 import type { RoleplaySurfaceState } from "@/app/roleplay/surface-state";
 import {
   SessionSettingsPanel,
   type RoleplayTurnDiagnostics,
 } from "@/react-app/domains/roleplay/components/session-settings-panel";
+import { SceneStateHud } from "@/react-app/domains/roleplay/components/scene-state-hud";
 import { ReactSessionComposer } from "./composer/composer";
 import { useSessionModelSelection } from "./session-model-store";
 import type { ProviderCatalog } from "./use-model-behavior";
@@ -65,7 +69,12 @@ import { PaperGrainGradient } from "@openwork/ui/react";
 import { useShellConfig } from "@/react-app/shell/shell-config";
 import { useReactRenderWatchdog } from "@/react-app/shell/react-render-watchdog";
 import { SessionDebugPanel } from "./debug-panel";
-import { deriveRenderedSessionMessages, resolveRenderedSessionSnapshot } from "./session-render-state";
+import {
+  deriveRenderedSessionMessages,
+  hideRoleplaySceneToolParts,
+  lastAssistantTurnFailed,
+  resolveRenderedSessionSnapshot,
+} from "./session-render-state";
 import { useLocal } from "@/react-app/kernel/local-provider";
 import { resolveAttachmentFileMetadata } from "@/react-app/domains/session/sync/attachment-file-part";
 import { deriveSessionRenderModel } from "@/react-app/domains/session/sync/transition-controller";
@@ -329,6 +338,26 @@ export type RoleplayControls = {
   onChangeSettings: (settings: RoleplaySessionSettings) => void;
   /** What the last send actually put in the prompt; null until this session has sent one. */
   diagnostics: RoleplayTurnDiagnostics | null;
+  /** A scene write is in flight. The panel stays readable and stops accepting more. */
+  sceneBusy: boolean;
+  /** The last refusal from the scene route, verbatim. A stale revision reads as one. */
+  sceneError: string | null;
+  /** Hand edits, through the same route and rules the model's tool writes through. */
+  onPatchScene: (patch: SceneStatePatch) => void;
+  onDismissSceneError: () => void;
+  /**
+   * An assistant turn finished.
+   *
+   * The tool writes scene state server-side, so the app only learns about it by
+   * refetching the binding. Fired here rather than polled: the surface is the
+   * only place that knows a turn ended, and a poll would keep asking a question
+   * whose answer changes at most once a turn.
+   *
+   * `failed` is read from the transcript, because `promptAsync` returned long
+   * before the failure did. A turn that failed had already dispatched, so the
+   * tool may have committed against a reply that never arrived.
+   */
+  onAssistantTurnComplete: (outcome: { failed: boolean }) => void;
 };
 
 export type SessionSurfaceProps = {
@@ -946,6 +975,25 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const preparingCloudTools = props.cloudMcpSubmissionState.status === "checking" ||
     props.cloudMcpSubmissionState.status === "repairing";
   const chatStreaming = sending || liveStatus.type === "busy" || liveStatus.type === "retry";
+  /**
+   * Tell the route a turn ended, so it can refetch what the model wrote.
+   *
+   * Keyed off the streaming flag falling rather than off a message arriving: the
+   * tool writes on the server, so there is nothing in the transcript to watch,
+   * and the reply and its scene write finish together.
+   */
+  const wasStreaming = useRef(false);
+  const onAssistantTurnComplete = props.roleplayControls?.onAssistantTurnComplete;
+  const reportTurnComplete = useEffectEvent(() => {
+    onAssistantTurnComplete?.({ failed: lastAssistantTurnFailed(renderedMessages) });
+  });
+  useEffect(() => {
+    // The transcript is read at the moment streaming stops, not tracked as a
+    // dependency: this fires on the edge, and adding the messages to the deps
+    // would fire it again on every later render of the same finished turn.
+    if (wasStreaming.current && !chatStreaming) reportTurnComplete();
+    wasStreaming.current = chatStreaming;
+  }, [chatStreaming]);
 
   useEffect(() => {
     if (!chatStreaming) setSteering(false);
@@ -974,6 +1022,19 @@ export function SessionSurface(props: SessionSurfaceProps) {
     () => deriveRenderedSessionMessages({ transcriptState, snapshot }),
     [snapshot, transcriptState],
   );
+  /**
+   * What each reply changed, read off the calls the transcript already holds.
+   *
+   * Derived rather than stored: the `roleplay_state_update` parts are in the
+   * message list whether or not they are rendered, so this needs no write, no
+   * schema, and no bookkeeping that could disagree with what actually happened.
+   * Built from the messages *before* the calls are hidden, which is the only
+   * place they still exist.
+   */
+  const sceneChangesByMessage = useMemo(
+    () => (props.roleplay ? sceneChangesByMessageId(baseRenderedMessages, ROLEPLAY_STATE_TOOL) : new Map()),
+    [baseRenderedMessages, props.roleplay],
+  );
   const renderedMessages = useMemo(() => {
     const base = evalMarkdownMessages.length === 0
       ? baseRenderedMessages
@@ -995,11 +1056,20 @@ export function SessionSurface(props: SessionSurfaceProps) {
         )
       : base;
 
+    // The scene-state tool call is bookkeeping, not the scene. A
+    // `roleplay_state_update` bubble mid-conversation breaks the reading
+    // experience this whole surface exists for, so it is dropped here — only for
+    // roleplay sessions, and only for that one tool. It stays visible in the
+    // developer transcript, which is not built from this list.
+    const withoutSceneCalls = props.roleplay
+      ? hideRoleplaySceneToolParts(withAlternative, ROLEPLAY_STATE_TOOL)
+      : withAlternative;
+
     // While the opening is being written there is deliberately no greeting on
     // screen. The card's would be replaced within seconds, and a scene opened
     // twice reads as the character repeating itself.
     const greeting = props.roleplay?.greetingPending ? "" : props.roleplay?.greeting.trim();
-    if (!greeting) return withAlternative;
+    if (!greeting) return withoutSceneCalls;
     return [
       {
         id: `${props.sessionId}:roleplay-greeting`,
@@ -1007,11 +1077,12 @@ export function SessionSurface(props: SessionSurfaceProps) {
         parts: [{ type: "text", text: greeting }],
         metadata: { opencode: { created: 0 } },
       } satisfies UIMessage,
-      ...withAlternative,
+      ...withoutSceneCalls,
     ];
   }, [
     baseRenderedMessages,
     evalMarkdownMessages,
+    props.roleplay,
     props.roleplay?.greeting,
     props.roleplay?.greetingPending,
     props.roleplayControls?.turn,
@@ -2104,6 +2175,40 @@ export function SessionSurface(props: SessionSurfaceProps) {
       ) : null}
 
       <div className="relative min-h-0 flex-1">
+        {/*
+          Floating, which the settings `<aside>` at the bottom of this file argues
+          against for itself — and that reasoning still holds for settings. The
+          difference is that scene state changes on its own while the user reads,
+          which settings never do, so glanceability is the point rather than a
+          convenience.
+
+          The objection there was to a rail holding width open in *every* roleplay
+          conversation. This is absolutely positioned, so it takes no width from
+          the transcript's reading measure at all, and it renders only in a
+          session that actually has a scene. An ordinary roleplay conversation
+          therefore never sees it, which is the condition that comment objects to.
+
+          Gated on the session having records rather than on the character being
+          NSFW: the tool is advertised engine-wide, so an ordinary bound session
+          can still end up with state, and hiding live state behind a flag on the
+          character would leave it invisible and uneditable.
+        */}
+        {/* `inset-x-3` rather than `end-3`: the panel sizes itself against this
+            width, and an absolutely positioned box with only one edge pinned has
+            no definite width to size against. `pointer-events-none` keeps the
+            empty half of the strip from swallowing clicks meant for the
+            transcript underneath. */}
+        {props.roleplay?.sceneState && sessionHasSceneState(props.roleplay.sceneState) && props.roleplayControls ? (
+          <div className={`pointer-events-none absolute inset-x-3 z-20 flex justify-end ${findOwned ? "top-16" : "top-3"}`}>
+            <SceneStateHud
+              state={props.roleplay.sceneState}
+              busy={props.roleplayControls.sceneBusy}
+              error={props.roleplayControls.sceneError}
+              onPatch={props.roleplayControls.onPatchScene}
+              onDismissError={props.roleplayControls.onDismissSceneError}
+            />
+          </div>
+        ) : null}
         <div
           ref={scrollRef}
           onWheel={(event) => {
@@ -2219,6 +2324,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                           : null
                       }
                       roleplay={roleplayRenderContext}
+                      sceneChangesByMessage={sceneChangesByMessage}
                     >
                       <MessageList
                         messages={renderedMessages}
@@ -2307,6 +2413,16 @@ export function SessionSurface(props: SessionSurfaceProps) {
         {props.roleplayControls?.compacted ? (
           <p className="text-muted-foreground px-4 pb-1 text-xs">
             This conversation was compacted. Anything the summary dropped survives only in the story so far.
+          </p>
+        ) : null}
+        {/* Above the composer rather than in the transcript, and it stays until
+            the user lifts it. A safeword that produced only a differently-worded
+            reply would leave them reading the reply to work out whether it was
+            received; this says so where they are about to type the next message,
+            every time, for as long as it is true. */}
+        {props.roleplay?.settings.deEscalated ? (
+          <p className="text-amber-11 px-4 pb-1 text-xs">
+            The scene is paused. Replies stay out of character until you start it again in the session settings.
           </p>
         ) : null}
         <ReactSessionComposer
@@ -2443,6 +2559,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
           </p>
           <SessionSettingsPanel
             characterName={props.roleplay.characterName}
+            nsfw={props.roleplay.nsfw}
             personas={props.roleplayControls.personas}
             personaId={props.roleplayControls.personaId}
             onSelectPersona={props.roleplayControls.onSelectPersona}

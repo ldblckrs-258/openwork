@@ -211,14 +211,6 @@ export type LorebookEntrySanitizeResult = {
   truncatedFields: string[];
 };
 
-/**
- * Apply the card sanitizer's limits to standalone lorebook entries.
- *
- * A world file downloaded from a site is exactly as untrusted as a card, and its
- * entries reach the prompt by the same route, so they pass the same caps and the
- * same extension allow-list. This exists so the lorebook importer does not grow a
- * second, drifting copy of those rules.
- */
 export function sanitizeLorebookEntries(entries: RoleplayLorebookEntry[], path: string): LorebookEntrySanitizeResult {
   const sink: ReportSink = { stripped: [], truncated: [], droppedV3: [] };
   const capped = capList(entries, CARD_COUNT_LIMITS.book_entries, `${path}.entries`, sink).map((entry, index) => {

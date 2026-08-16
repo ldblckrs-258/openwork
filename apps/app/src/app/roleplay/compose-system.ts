@@ -1,36 +1,12 @@
-/**
- * Every send in this app — roleplay or not — already carries a per-prompt
- * `system` string built by `buildOpenworkEnvSystemContext`. A roleplay turn needs
- * that same channel for the compiled character prompt and for the turn's director
- * text, so the three have to share it.
- *
- * Composing rather than replacing is the requirement: replacing would strip the
- * environment description every other feature assumes is present. And because the
- * environment string is built outside the prompt compiler, it is not counted by
- * the compiler's injection budget — so the only place a combined ceiling can be
- * enforced is here, after all three parts are known.
- */
-
 export const SYSTEM_SECTION_DELIMITER = "\n\n---\n\n";
 
-/**
- * Combined ceiling for the whole `system` string, in characters.
- *
- * A character prompt, a workspace description, and a turn instruction all land
- * in the system message ahead of every message of chat history. Roughly 8k
- * tokens leaves room for a long conversation before the engine starts compacting
- * away the history the character is supposed to remember.
- */
 export const COMBINED_SYSTEM_BUDGET_CHARS = 32_000;
 
 const TRUNCATION_NOTICE = "\n\n[…truncated to fit the prompt budget]";
 
 export type ComposeSystemInput = {
-  /** Whatever the shared env-context builder produced for this send, if anything. */
   envContext: string | null | undefined;
-  /** Output of the Phase 1 prompt compiler. */
   characterPrompt: string;
-  /** This turn's out-of-character steering, already extracted from the message. */
   directorText?: string;
   budgetChars?: number;
 };
@@ -38,7 +14,6 @@ export type ComposeSystemInput = {
 export type ComposedSystem = {
   system: string;
   chars: number;
-  /** Sections removed to fit the ceiling, in the order they were dropped. */
   dropped: Array<"envContext">;
   truncated: boolean;
 };

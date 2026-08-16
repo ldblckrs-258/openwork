@@ -7,6 +7,13 @@ import {
   roleplayPersonaRecordSchema,
   roleplaySessionBindingSchema,
   roleplayTurnRecordSchema,
+  sceneStatePatchSchema,
+  roleplaySceneStateSchema,
+  applyScenePatch,
+  applySceneRestore,
+  type RoleplaySceneState,
+  type ScenePatchResult,
+  type SceneStatePatch,
   type RoleplayCardRevision,
   type RoleplayCharacterRecord,
   type RoleplayLorebookRecord,
@@ -28,8 +35,10 @@ import {
   listLorebooks,
   listPersonas,
   readCharacter,
+  deleteTurns,
   listSessionTurns,
   readSessionBinding,
+  updateSceneState,
   writeCharacter,
   writeLorebook,
   writeMemory,
@@ -54,13 +63,6 @@ interface RegisterRoleplayRoutesOptions {
   resolveWorkspaceWithoutBootstrap: (config: ServerConfig, id: string) => Promise<WorkspaceInfo>;
 }
 
-/**
- * Reject the record here rather than letting the store throw.
- *
- * The store validates on write too, but that produces a 500 for what is really a
- * bad request. Parsing at the edge also means the client never persists a shape
- * the schema would strip, so what it reads back matches what it sent.
- */
 function parseCharacter(body: Record<string, unknown>): RoleplayCharacterRecord {
   const parsed = roleplayCharacterRecordSchema.safeParse(body.character);
   if (!parsed.success) {
@@ -113,16 +115,40 @@ function parseLorebook(body: Record<string, unknown>): RoleplayLorebookRecord {
     throw new ApiError(400, "invalid_lorebook", `Invalid lorebook: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
   }
 
-  // The schema is lenient by design, so a malformed entry makes the whole
-  // `entries` array fall back to empty rather than failing. Silently storing a
-  // book with none of its entries is the one outcome nobody could debug, so a
-  // count that shrank is rejected instead.
   if (submittedEntryCount(body.lorebook) !== parsed.data.entries.length) {
     throw new ApiError(400, "invalid_lorebook_entry", "One or more lorebook entries are invalid");
   }
 
   return parsed.data;
 }
+
+function parseScenePatch(body: Record<string, unknown>): SceneStatePatch {
+  const parsed = sceneStatePatchSchema.safeParse(body.patch);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_scene_patch", `Invalid scene patch: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * A snapshot to put the scene back to, when the body carries one.
+ *
+ * Absent for every call the plugin makes: it builds its request body from its own
+ * validated arguments, and a restore is not among them. So this shares the
+ * route — one queue, one store primitive — without becoming something a model can
+ * reach. Undoing a model's write is a thing the app does on the user's behalf,
+ * never a thing the model asks for.
+ */
+function parseSceneRestore(body: Record<string, unknown>): RoleplaySceneState | undefined {
+  if (body.restore === undefined) return undefined;
+  const parsed = roleplaySceneStateSchema.safeParse(body.restore);
+  if (!parsed.success) {
+    throw new ApiError(400, "invalid_scene_restore", "Invalid scene snapshot");
+  }
+  return parsed.data;
+}
+
+const EMPTY_SCENE_STATE: RoleplaySceneState = { records: [], revision: 0, updatedAt: 0 };
 
 function parseRevision(body: Record<string, unknown>): RoleplayCardRevision {
   const parsed = roleplayCardRevisionSchema.safeParse(body.revision);
@@ -163,7 +189,6 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     ensureWritable(config);
     requireClientScope(ctx, "collaborator");
     const workspace = await resolveWorkspace(config, ctx.params.id);
-    // Tombstoned, not removed, so sessions bound to it stay readable.
     const deleted = await deleteCharacter(config, workspace.id, ctx.params.characterId);
     return jsonResponse({ deleted });
   });
@@ -220,9 +245,62 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     return jsonResponse({ cleared: await clearSessionBinding(config, workspace.id, ctx.params.sessionId) });
   });
 
-  // Director text lives in `system`, not in message history, and a regenerate
-  // destroys the reply it replaces. Both are why a turn is stored here rather
-  // than reconstructed from the transcript.
+  /**
+   * The one write path for scene state, for both of its writers: the plugin tool
+   * and the scene panel in the app. One route means one copy of the rules, so a
+   * hand edit cannot be permitted something a model's edit is refused.
+   *
+   * The two are not equal in what they may ask for. `remove` exists in the patch
+   * schema and not in the tool's argument schema, so the model cannot express it
+   * and a person can. The panel also sends the `revision` it was showing, which
+   * is what turns a turn landing on top of a correction into a refusal it can
+   * report rather than a silent overwrite.
+   *
+   * There is no session id in the tool's arguments — it comes from the engine's
+   * own `context.sessionID` — so the id in this path is not user-supplied text
+   * and cannot be pointed at another conversation by a card.
+   *
+   * A session with no roleplay binding gets a 404 here, and that is the scoping
+   * mechanism for the tool being advertised engine-wide: an ordinary coding
+   * session that calls it has no scene to change. A bound session whose state is
+   * absent starts from an empty one, because a scene that opened with no
+   * authored records still has to be able to gain its first.
+   */
+  addRoute(routes, "POST", "/workspace/:id/roleplay/sessions/:sessionId/scene-state", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const restore = parseSceneRestore(body);
+    const patch = restore ? undefined : parseScenePatch(body);
+    const now = Date.now();
+
+    function apply(state: RoleplaySceneState): ScenePatchResult {
+      if (restore) return applySceneRestore(state, restore, now);
+      return applyScenePatch(state, patch ?? {}, now);
+    }
+
+    let outcome: ScenePatchResult | undefined;
+    // Applied inside the update cycle, against what is actually stored, so a
+    // turn's write and a hand edit cannot each compute against the same state and
+    // have the later one silently discard the earlier.
+    await updateSceneState(config, workspace.id, ctx.params.sessionId, (current) => {
+      const result = apply(current ?? EMPTY_SCENE_STATE);
+      outcome = result;
+      return result.applied.length === 0 && result.removed.length === 0 ? undefined : result.next;
+    });
+
+    if (!outcome) throw new ApiError(404, "session_not_bound", "This session is not a roleplay session");
+
+    return jsonResponse({
+      applied: outcome.applied,
+      removed: outcome.removed,
+      rejected: outcome.rejected,
+      revision: outcome.next.revision,
+      noop: outcome.noop,
+    });
+  });
+
   addRoute(routes, "GET", "/workspace/:id/roleplay/sessions/:sessionId/turns", "client", async (ctx) => {
     const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
     return jsonResponse({ turns: await listSessionTurns(config, workspace.id, ctx.params.sessionId) });
@@ -240,8 +318,15 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     return jsonResponse({ turn: await writeTurn(config, workspace.id, turn) });
   });
 
-  // Memories are per character, not per session: outliving the conversation they
-  // were learned in is the whole feature.
+  addRoute(routes, "POST", "/workspace/:id/roleplay/sessions/:sessionId/turns/delete", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const turnIds = Array.isArray(body.turnIds) ? body.turnIds.filter((id): id is string => typeof id === "string") : [];
+    return jsonResponse({ deleted: await deleteTurns(config, workspace.id, turnIds) });
+  });
+
   addRoute(routes, "GET", "/workspace/:id/roleplay/characters/:characterId/memories", "client", async (ctx) => {
     const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
     return jsonResponse({ memories: await listCharacterMemories(config, workspace.id, ctx.params.characterId) });
@@ -266,8 +351,6 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     return jsonResponse({ deleted: await deleteMemory(config, workspace.id, ctx.params.memoryId) });
   });
 
-  // Lorebooks are workspace-level, not character-level: one world commonly
-  // serves several characters, and the attachment lives on the book.
   addRoute(routes, "GET", "/workspace/:id/roleplay/lorebooks", "client", async (ctx) => {
     const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
     return jsonResponse({ lorebooks: await listLorebooks(config, workspace.id) });
@@ -292,9 +375,6 @@ export function registerRoleplayRoutes(options: RegisterRoleplayRoutesOptions): 
     return jsonResponse({ deleted: await deleteLorebook(config, workspace.id, ctx.params.lorebookId) });
   });
 
-  // Revisions are append-only. Undoing one writes the restored card through the
-  // ordinary character route and records another revision, so the history stays
-  // a record of what happened rather than of what is currently believed.
   addRoute(routes, "GET", "/workspace/:id/roleplay/characters/:characterId/revisions", "client", async (ctx) => {
     const workspace = await resolveWorkspaceWithoutBootstrap(config, ctx.params.id);
     return jsonResponse({ revisions: await listCharacterRevisions(config, workspace.id, ctx.params.characterId) });

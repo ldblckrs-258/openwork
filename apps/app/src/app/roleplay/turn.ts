@@ -3,6 +3,7 @@ import type {
   RoleplayLorebookRecord,
   RoleplayMemoryRecord,
   RoleplayPersona,
+  RoleplaySceneState,
   RoleplaySessionSettings,
 } from "@openwork/types/roleplay";
 
@@ -11,66 +12,46 @@ import { composeSystem, type ComposedSystem } from "./compose-system.js";
 import { selectLorebookEntries, type LorebookScanMessage, type LorebookSelection } from "./lorebook.js";
 import { substituteMacros } from "./macros.js";
 import { selectMemories } from "./memory.js";
-import { roleplayPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
+import { countRenderedSceneRecords, renderSceneStateSection } from "./scene-state.js";
+import { roleplayTurnPromptOptions, type RoleplayPromptOptions } from "./prompt-options.js";
 import { activeLorebooks, activeSkills, resolveSessionSettings } from "./session-settings.js";
 import { selectSkillInjections, type RoleplayAttachedSkill, type SkillSelection } from "./skills-injection.js";
 
 export type RoleplayTurnInput = {
   card: CharacterCardV2;
   persona: RoleplayPersona;
-  /** V3 nickname, when the card carried one. */
   charName?: string;
-  /** The greeting the client rendered as the transcript's first entry. */
   greeting?: string;
-  /** This turn's out-of-character steering, already split out of the message. */
   directorText?: string;
-  /** User-authored continuity notes; carries the scene across a compaction. */
   storySoFar?: string;
-  /** Approved memories for this character. Budgeted before they reach the prompt. */
   memories?: RoleplayMemoryRecord[];
-  /** Lorebooks attached to this character. Only the entries this turn triggers reach the prompt. */
   lorebooks?: RoleplayLorebookRecord[];
-  /**
-   * Skills attached to this character, with bodies already read.
-   *
-   * Filtered against `disabledSkillNames` and budgeted here, so the send path
-   * and the regenerate path cannot assemble different sets from the same
-   * surface state.
-   */
   skills?: RoleplayAttachedSkill[];
-  /**
-   * Recent transcript, oldest first, for lorebook key matching.
-   *
-   * The message being sent belongs at the end: an entry keyed on a term the user
-   * just typed has to fire for the reply to that message, not for the one after.
-   */
   scanMessages?: LorebookScanMessage[];
-  /**
-   * This conversation's own configuration.
-   *
-   * Read live rather than snapshotted per turn, so a change made mid-scene
-   * applies to the next send *and* to a regenerate of the reply already on
-   * screen. Two alternatives of one turn can therefore differ by more than the
-   * model's sampling.
-   */
   settings?: RoleplaySessionSettings;
+  sceneState?: RoleplaySceneState;
+  hardLimits?: string[];
+  /**
+   * Whether the bound character is marked adult.
+   *
+   * The only thing it decides here is whether the intensity dial reaches the
+   * prompt. It is not a second gate on the scene-state tool: that tool is
+   * advertised engine-wide, so an ordinary session can acquire state, and
+   * silently dropping the section for it would leave the model contradicting a
+   * scene the user can see on screen.
+   */
+  nsfw?: boolean;
   envContext: string | null | undefined;
 };
 
 export type RoleplayTurn = {
   prompt: RoleplayPromptOptions;
   composed: ComposedSystem;
-  /** Which lorebook entries fired, and why every candidate did or did not. */
   lorebook: LorebookSelection;
-  /** Which attached skills reached the prompt, and what happened to the rest. */
   skills: SkillSelection;
+  sceneState: { chars: number; recordCount: number };
 };
 
-/**
- * The greeting is rendered by the client, not stored by the engine, so the model
- * has no record of having said it. Without this the character's own opening line
- * is invisible to it and the first reply reads as if the scene had not started.
- */
 function openingLine(greeting: string, char: string, user: string): string {
   const expanded = substituteMacros(greeting, { char, user }).trim();
   return expanded ? `# Opening Line\n\nYou opened the scene with:\n\n${expanded}` : "";
@@ -88,9 +69,6 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
   const char = (input.charName ?? input.card.data.name).trim() || "Character";
   const user = input.persona.name.trim() || "User";
   const story = substituteMacros(input.storySoFar ?? "", { char, user }).trim();
-  // Budgeted here rather than inside `compilePrompt`: the compiler takes already
-  // chosen injections and ranks them against the lorebook, so deciding *which*
-  // memories are candidates has to happen before it sees them.
   const settings = resolveSessionSettings(input.settings);
   const memories = selectMemories(input.memories ?? [], settings.memoryBudgetChars).injections;
   const lorebook = selectLorebookEntries(
@@ -101,7 +79,6 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
       ...(settings.scanDepth === undefined ? {} : { scanDepth: settings.scanDepth }),
     },
   );
-  // Its own ceiling, outside the shared eviction pass: see `skills-injection.ts`.
   const skills = selectSkillInjections(activeSkills(input.skills ?? [], settings.disabledSkillNames));
   const characterPrompt = [
     compilePrompt(input.card, input.persona, {
@@ -110,15 +87,14 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
       lorebook: lorebook.after,
       memories,
       skills: skills.injections,
+      ...(input.sceneState ? { sceneState: input.sceneState } : {}),
+      hardLimits: input.hardLimits ?? [],
+      ...(input.nsfw ? { intensity: settings.intensity } : {}),
+      deEscalated: settings.deEscalated,
       systemPromptOverride: settings.systemPrompt,
-      // The two sources have already been cut to their own budgets, so the
-      // shared pass exists only to keep the sum from being re-cut against a
-      // ceiling the user has overridden.
       budgetChars: settings.memoryBudgetChars + settings.lorebookBudgetChars,
     }),
     input.greeting ? openingLine(input.greeting, char, user) : "",
-    // After the story so far, because it describes where the scene has got to
-    // rather than who the character is.
     story ? `# Story So Far\n\n${story}` : "",
   ]
     .filter(Boolean)
@@ -130,5 +106,21 @@ export function buildRoleplayTurn(input: RoleplayTurnInput): RoleplayTurn {
     directorText: input.directorText,
   });
 
-  return { prompt: roleplayPromptOptions(composed.system), composed, lorebook, skills };
+  const sceneSection = settings.deEscalated ? "" : renderSceneStateSection(input.sceneState);
+
+  // The turn variant, not the shared one: this is the single path allowed to
+  // carry the scene-state tool. The other five roleplay callers stay on
+  // `roleplayPromptOptions` and keep carrying nothing.
+  //
+  // While the safeword's freeze is in force the turn narrows to carrying
+  // nothing either. The de-escalation instruction asks the model to stop; this
+  // is what stops it from writing state whatever it decides about that, and it
+  // is why the freeze is a stored flag rather than a property of one send.
+  return {
+    prompt: roleplayTurnPromptOptions(composed.system, { denyTools: settings.deEscalated }),
+    composed,
+    lorebook,
+    skills,
+    sceneState: { chars: sceneSection.length, recordCount: countRenderedSceneRecords(sceneSection) },
+  };
 }

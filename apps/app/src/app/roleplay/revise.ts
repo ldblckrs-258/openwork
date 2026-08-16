@@ -12,30 +12,14 @@ import { roleplayPromptOptions } from "./prompt-options.js";
 import { sanitizeCard } from "./sanitize-card.js";
 import revisePrompt from "./revise-propose.md?raw";
 
-/**
- * Letting a character propose edits to its own card.
- *
- * Nothing here applies anything. A proposal is a suggestion the user approves one
- * field at a time, for the same reason memories are reviewed: a card that
- * rewrites itself drifts permanently on the evidence of one odd session, and the
- * user has no way to attribute the change afterwards. Per-field rather than
- * per-proposal because a suggestion that gets `personality` right and `scenario`
- * wrong is common, and all-or-nothing would lose the good half.
- */
-
 export { revisePrompt };
 
 /**
- * The only fields a model may propose changes to.
- *
- * `name` and `first_mes` are excluded because they are identity and opening, not
- * things play establishes. `alternate_greetings` likewise.
- *
- * `system_prompt` and `post_history_instructions` are excluded for a different
- * and harder reason: `system_prompt` **replaces the app's roleplay instructions
- * wholesale** when a card sets it. A model able to write that field could rewrite
- * its own operating instructions through a review step the user reads as a
- * personality tweak. It is not a revisable field and must not become one.
+ * `system_prompt` and `post_history_instructions` are excluded because
+ * `system_prompt` **replaces the app's roleplay instructions wholesale** when a
+ * card sets it. A model able to write that field could rewrite its own operating
+ * instructions through a review step the user reads as a personality tweak. It
+ * is not a revisable field and must not become one.
  */
 export const REVISABLE_FIELDS = ["description", "personality", "scenario", "mes_example"] as const;
 
@@ -53,7 +37,6 @@ export const revisionProposalsSchema = z.object({
 
 export type FieldProposal = {
   field: RevisableField;
-  /** The card's current text, so the UI renders a before-and-after without re-reading the card. */
   before: string;
   after: string;
   why: string;
@@ -65,19 +48,10 @@ export type ParsedRevisionProposals =
 
 export type ReviseInput = {
   card: CharacterCardV2;
-  /** Out-of-character corrections the user gave, strongest signal available. */
   directorNotes: string[];
   transcript: string;
 };
 
-/**
- * Build the proposal call.
- *
- * Director notes are sent as their own labelled section rather than left inline
- * in the transcript. They are the only evidence in the system where the user
- * states directly what was wrong, and a note buried among a hundred lines of
- * dialogue reads to the model as one more line of dialogue.
- */
 export function buildRevisionRequest(input: ReviseInput): GenerationRequest {
   const fields = REVISABLE_FIELDS.map((field) => `## ${field}\n\n${input.card.data[field] || "(empty)"}`).join("\n\n");
   const notes = input.directorNotes.map((note) => `- ${note.trim()}`).filter((note) => note !== "- ").join("\n");
@@ -89,17 +63,6 @@ export function buildRevisionRequest(input: ReviseInput): GenerationRequest {
   return { ...roleplayPromptOptions(revisePrompt), text: sections.join("\n\n") };
 }
 
-/**
- * Parse a proposal response into per-field changes.
- *
- * A change to a field outside `REVISABLE_FIELDS` is dropped rather than failing
- * the response: a model that also volunteers a `system_prompt` rewrite has still
- * produced usable suggestions for the fields it was asked about, and the drop is
- * silent because there is nothing the user could do about it.
- *
- * A change whose text matches what is already there is dropped too. Reviewing a
- * no-op teaches users to approve without reading.
- */
 export function parseRevisionProposals(raw: string, card: CharacterCardV2): ParsedRevisionProposals {
   const parsed = parseLlmJson(raw, revisionProposalsSchema);
   if (!parsed.ok) return { ok: false, error: parsed.error, raw };
@@ -125,7 +88,6 @@ export type AppliedRevision = {
 };
 
 export type ApplyRevisionResult =
-  /** Nothing was approved. The character is returned untouched, byte for byte. */
   | { ok: true; unchanged: true; character: RoleplayCharacterRecord }
   | ({ ok: true; unchanged: false } & AppliedRevision)
   | { ok: false; message: string };
@@ -134,17 +96,6 @@ function withCardData(card: CharacterCardV2, data: CharacterCardDataV2): unknown
   return { spec: "chara_card_v2", spec_version: "2.0", data: { ...card.data, ...data } };
 }
 
-/**
- * Apply the approved changes, recording what the card was first.
- *
- * The result goes back through `sanitizeCard`, not only the schema. A revision is
- * model output steerable by the card's own text, and once written the compiler
- * treats it as trusted — which is exactly the position an imported card is in, so
- * it clears the same gate.
- *
- * Approving nothing returns the character untouched, byte for byte, rather than
- * writing an empty revision.
- */
 export function applyRevision(input: {
   character: RoleplayCharacterRecord;
   proposals: FieldProposal[];
@@ -173,8 +124,6 @@ export function applyRevision(input: {
     revision: {
       id: input.revisionId,
       characterId: input.character.id,
-      // The card *before* this revision. Rollback is then a copy rather than an
-      // inverse diff, which is the operation most likely to be subtly wrong.
       card: input.character.card,
       changedFields: changes.map((change) => change.field),
       createdAt: input.now,
@@ -183,14 +132,6 @@ export function applyRevision(input: {
   };
 }
 
-/**
- * Undo back to a stored card.
- *
- * Records another revision rather than deleting the one being undone, so the
- * history stays a record of what happened. `revisedAt` is left set: a card that
- * has been revised and rolled back is still not the original author's untouched
- * work as far as anything downstream is concerned.
- */
 export function rollbackTo(input: {
   character: RoleplayCharacterRecord;
   revision: RoleplayCardRevision;
@@ -219,13 +160,6 @@ export function changedFieldsBetween(left: CharacterCardV2, right: CharacterCard
   return REVISABLE_FIELDS.filter((field) => left.data[field] !== right.data[field]);
 }
 
-/**
- * How far the card has walked from where it started.
- *
- * The oldest revision is the card before anything was applied, so this is the
- * comparison that catches drift compounding — many individually reasonable
- * approvals adding up to a character the user never wrote.
- */
 export function driftFromOriginal(
   character: RoleplayCharacterRecord,
   revisions: RoleplayCardRevision[],

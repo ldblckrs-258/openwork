@@ -22,17 +22,6 @@ type MemoryReviewProps = {
   onClose: () => void;
 };
 
-/**
- * Approve, edit, or reject what the extractor proposed.
- *
- * Nothing here is stored until the user presses the button. That is the point:
- * an extracted memory that misreads the transcript becomes a permanent false
- * fact the character then states with confidence in every later session, and
- * the user experiences it as the character being wrong about their own history.
- *
- * Nothing is pre-selected for the same reason. A dialog that arrives with every
- * box ticked is an approval step in name only.
- */
 export function MemoryReview({ open, proposals, saving, onKeep, onClose }: MemoryReviewProps) {
   const [texts, setTexts] = React.useState<string[]>([]);
   const [keeping, setKeeping] = React.useState<boolean[]>([]);

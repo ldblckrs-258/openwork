@@ -16,14 +16,6 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-/**
- * Import a character card.
- *
- * Reads the file in the renderer and hands the result to the editor unsaved, so
- * a stranger's card is on screen and editable before anything is written. The
- * decode and the sanitize both happen in `importCardFromFile`; this component
- * only moves bytes and shows what came back.
- */
 export function CharacterImport({ onImported, onCancel }: CharacterImportProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -86,7 +78,6 @@ export function CharacterImport({ onImported, onCancel }: CharacterImportProps) 
         className="hidden"
         onChange={(event) => {
           void accept(event.target.files?.[0]);
-          // Cleared so picking the same file twice after an error fires again.
           event.target.value = "";
         }}
       />

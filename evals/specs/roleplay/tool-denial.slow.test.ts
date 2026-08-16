@@ -8,15 +8,15 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { buildOpenworkRuntimeConfigObjectFromSnapshot } from "../../../apps/server/src/openwork-runtime-config.ts";
 import {
   ROLEPLAY_AGENT,
+  ROLEPLAY_STATE_TOOL,
   roleplayPromptOptions,
-  toolMapGrantsAccess,
+  roleplayTurnPromptOptions,
+  toolMapGrantsOnly,
 } from "../../../apps/app/src/app/roleplay/prompt-options.ts";
 import { compilePrompt } from "../../../apps/app/src/app/roleplay/compile-prompt.ts";
 import { sanitizeCard } from "../../../apps/app/src/app/roleplay/sanitize-card.ts";
 
 /**
- * The Phase 2 gate.
- *
  * Denial is asserted against the tool array the engine actually puts on the wire,
  * not against the model's willingness to behave. A local OpenAI-compatible server
  * stands in for the provider and captures each assembled request, so this needs
@@ -35,7 +35,6 @@ let workspace = "";
 let engine: ChildProcess | undefined;
 let providerServer: Server | undefined;
 let captures: { tools: string[]; messages: { role: string; content: string }[] }[] = [];
-/** When set, the mock provider answers with a forced tool call instead of text. */
 let forcedToolCall: { name: string; args: Record<string, unknown> } | undefined;
 
 function startProvider(): Promise<void> {
@@ -63,7 +62,6 @@ function startProvider(): Promise<void> {
             })),
           });
 
-          // The engine always requests `stream: true`, so responses must be SSE.
           const chunk = (delta: unknown, finish?: string) =>
             `data: ${JSON.stringify({
               id: "chatcmpl-spec",
@@ -79,8 +77,6 @@ function startProvider(): Promise<void> {
             connection: "keep-alive",
           });
 
-          // Fire the rigged call once. Repeating it would loop the engine forever,
-          // since it answers every tool result with another identical call.
           const pending = forcedToolCall;
           if (pending) {
             forcedToolCall = undefined;
@@ -117,9 +113,7 @@ async function waitForEngine(): Promise<void> {
     try {
       const response = await fetch(`http://127.0.0.1:${ENGINE_PORT}/app`);
       if (response.ok) return;
-    } catch {
-      // not up yet
-    }
+    } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error("opencode engine did not become ready");
@@ -177,12 +171,13 @@ beforeAll(async () => {
   workspace = await mkdtemp(join(tmpdir(), "openwork-denial-"));
   await writeFile(join(workspace, "canary.txt"), `${CANARY}\n`, "utf8");
 
-  // The real shipped agent registry, so this asserts what production configures
-  // rather than a copy that can drift away from it.
-  const runtimeConfig = buildOpenworkRuntimeConfigObjectFromSnapshot({});
+  const runtimeConfig = buildOpenworkRuntimeConfigObjectFromSnapshot({}) as Record<string, unknown> & { plugin: string[] };
   const config = {
     ...runtimeConfig,
-    plugin: [],
+    // It has to be here: with `plugin: []` the roleplay tool never loads, every
+    // variant reports zero tools, and "denial works" is indistinguishable from
+    // "the tool was never registered".
+    plugin: runtimeConfig.plugin.filter((entry) => entry.includes("openwork-roleplay-state")),
     mcp: {},
     provider: {
       specmock: {
@@ -216,6 +211,10 @@ describe.skipIf(!available)("roleplay tool denial", () => {
     // An enumerated deny-list is the wrong shape: unlisted tool ids stay enabled,
     // the engine advertises more ids than it offers, and MCP servers add more at
     // runtime. Anything the list forgets is enabled by default.
+    //
+    // The one named `allow` beside the wildcard is the scene-state tool, and it
+    // does not cancel the wildcard — the differential below proves that against
+    // this engine rather than taking the measurement's word for it.
     const config = buildOpenworkRuntimeConfigObjectFromSnapshot({}) as {
       agent: Record<string, { tools?: Record<string, boolean>; permission?: Record<string, string>; temperature?: number }>;
     };
@@ -223,15 +222,59 @@ describe.skipIf(!available)("roleplay tool denial", () => {
 
     expect(roleplay).toBeDefined();
     expect(roleplay?.tools).toEqual({ "*": false });
-    expect(roleplay?.permission).toEqual({ "*": "deny" });
+    expect(roleplay?.permission).toEqual({ "*": "deny", [ROLEPLAY_STATE_TOOL]: "allow" });
     expect(roleplay?.temperature).toBe(0.95);
   });
 
-  test("a roleplay turn is offered no tools at all", async () => {
+  test("a roleplay generation call is offered no tools at all", async () => {
+    // The shared options function: greeting, memory extraction, both generation
+    // prompts, and revise. All five process untrusted text and none may reach a
+    // tool.
     const options = roleplayPromptOptions("You are Aria.");
     const tools = await sendTurn({ agent: options.agent, tools: options.tools, system: options.system });
 
     expect(tools).toEqual([]);
+  });
+
+  test("a roleplay turn is offered exactly one tool, and it is the scene-state tool", async () => {
+    const options = roleplayTurnPromptOptions("You are Aria.");
+    const tools = await sendTurn({ agent: options.agent, tools: options.tools, system: options.system });
+
+    expect(tools).toEqual([ROLEPLAY_STATE_TOOL]);
+    expect(toolMapGrantsOnly(options.tools, [ROLEPLAY_STATE_TOOL])).toBe(true);
+  });
+
+  test("the turn's one allow does not restore any other tool at execution", async () => {
+    // The sharp end of naming a key beside a wildcard. If the wildcard were
+    // cancelled, this rigged `read` would run and the execution backstop would
+    // be off for every tool rather than open for one.
+    const canaryPath = join(workspace, "canary.txt");
+    try {
+      forcedToolCall = { name: "read", args: { filePath: canaryPath } };
+      const options = roleplayTurnPromptOptions("You are Aria.");
+      const denied = await runTurn({ agent: options.agent, tools: options.tools, system: options.system });
+
+      expect(denied.executed).toEqual([]);
+      expect(denied.transcript).not.toContain(CANARY);
+    } finally {
+      forcedToolCall = undefined;
+    }
+  });
+
+  test("a turn narrowed by the safeword carries nothing again", async () => {
+    const options = roleplayTurnPromptOptions("You are Aria.", { denyTools: true });
+    const tools = await sendTurn({ agent: options.agent, tools: options.tools, system: options.system });
+
+    expect(tools).toEqual([]);
+  });
+
+  test("the scene-state tool is not offered to the default openwork agent", async () => {
+    // `plugin[]` is engine-wide, so without the agent-level deny this tool would
+    // be on the wire in every ordinary coding session in every workspace.
+    const tools = await sendTurn({ agent: "openwork" });
+
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools).not.toContain(ROLEPLAY_STATE_TOOL);
   });
 
   test("the control proves this engine would otherwise offer tools", async () => {
@@ -244,11 +287,28 @@ describe.skipIf(!available)("roleplay tool denial", () => {
   });
 
   test("tools: {} is a no-op and must never be mistaken for deny-all", async () => {
+    // With no agent behind it, an empty map leaves every tool in place. That is
+    // the whole point: the map is a per-key override, not a reset.
+    const withoutAgent = await sendTurn({ tools: {} });
+
+    expect(withoutAgent.length).toBeGreaterThan(0);
+    expect(withoutAgent).toContain("read");
+  });
+
+  test("a send that forgets its tools map falls back to the agent, which now permits one tool", async () => {
+    // Recorded because it is a real narrowing of the backstop, discovered here
+    // rather than assumed. Before the scene-state tool existed, a roleplay send
+    // that forgot its `tools` map got zero tools from the agent alone. It now
+    // gets exactly one, because an agent-level `permission` allow re-advertises
+    // that id even though the agent's own `tools` map is a wildcard deny.
+    //
+    // The blast radius is one tool that refuses every agent but `roleplay` and
+    // whose route 404s a session with no roleplay binding — so a forgotten map
+    // leaks nothing. What must never happen is a *second* id appearing here,
+    // which is why this asserts the exact set.
     const tools = await sendTurn({ agent: ROLEPLAY_AGENT, tools: {} });
 
-    expect(tools).toEqual([]);
-    const withoutAgent = await sendTurn({ tools: {} });
-    expect(withoutAgent.length).toBeGreaterThan(0);
+    expect(tools).toEqual([ROLEPLAY_STATE_TOOL]);
   });
 
   test("denying only edit/bash/webfetch leaves file-reading tools exposed", async () => {

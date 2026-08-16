@@ -17,6 +17,7 @@ import {
   resolveSessionSettings,
   totalSourceBudgetChars,
 } from "@/app/roleplay/session-settings";
+import { DEFAULT_SAFEWORD, MAX_SAFEWORD_CHARS, SCENE_INTENSITY_LEVELS } from "@openwork/types/roleplay";
 import { SKILL_BUDGET_CHARS, type RoleplayAttachedSkill, type SkillSelection } from "@/app/roleplay/skills-injection";
 
 import { Button } from "@/components/ui/button";
@@ -36,22 +37,29 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { StorySoFar } from "./story-so-far";
 
-/** What the last send actually did, so the panel reports rather than predicts. */
 export type RoleplayTurnDiagnostics = {
   lorebook: LorebookSelection;
-  /** Which attached skills reached the prompt, and what happened to the rest. */
   skills: SkillSelection;
   systemChars: number;
   truncated: boolean;
+  sceneStateChars: number;
+  sceneRecordCount: number;
+};
+
+const SCENE_INTENSITY_LABELS: Record<string, { label: string; hint: string }> = {
+  fade_to_black: { label: "Fade to black", hint: "Cuts away before anything explicit." },
+  suggestive: { label: "Suggestive", hint: "Written, but the explicit detail is left implied." },
+  explicit: { label: "Explicit", hint: "Written directly, in plain language." },
+  graphic: { label: "Graphic", hint: "Written directly and in full physical detail." },
 };
 
 type SessionSettingsPanelProps = {
   characterName: string;
+  nsfw: boolean;
   personas: RoleplayPersonaRecord[];
   personaId: string;
   onSelectPersona: (personaId: string) => void;
   lorebooks: RoleplayLorebookRecord[];
-  /** Every attached skill whose ref resolved, including ones switched off here. */
   skills: RoleplayAttachedSkill[];
   settings: RoleplaySessionSettings;
   onChangeSettings: (settings: RoleplaySessionSettings) => void;
@@ -89,15 +97,6 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-/**
- * A number the user may leave alone.
- *
- * Empty means "the app's default", which is a different state from any number
- * they could type — including the default's own value, because a typed default
- * would then stop tracking a later change to it. Committed on blur rather than
- * per keystroke: an intermediate "1" on the way to "12000" is a valid number and
- * would otherwise be saved, and every save is a round trip to the server.
- */
 function BudgetField({
   id,
   label,
@@ -152,6 +151,66 @@ function BudgetField({
   );
 }
 
+/**
+ * A cleared field commits as empty and resolves back to the app's default
+ * rather than to no safeword at all. A session with no safeword is the
+ * one state this control must not be able to reach.
+ */
+function SafewordField({
+  value,
+  saving,
+  onCommit,
+}: {
+  value: string | undefined;
+  saving: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = React.useState(value ?? "");
+
+  React.useEffect(() => {
+    setDraft(value ?? "");
+  }, [value]);
+
+  const commit = () => {
+    const trimmed = draft.trim().slice(0, MAX_SAFEWORD_CHARS);
+    if (trimmed !== (value ?? "")) onCommit(trimmed);
+    setDraft(trimmed);
+  };
+
+  const ordinary = /^[\p{L}\p{N}]+$/u.test(draft.trim());
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-3">
+        <Label htmlFor="rp-safeword" className="text-sm font-normal">
+          Safeword
+        </Label>
+        <Input
+          id="rp-safeword"
+          className="h-8 w-40"
+          maxLength={MAX_SAFEWORD_CHARS}
+          placeholder={DEFAULT_SAFEWORD}
+          value={draft}
+          disabled={saving}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+          }}
+        />
+      </div>
+      {/* Said where the choice is made, not discovered later. A plain word is a
+          legitimate choice — it is the one people actually remember — but it
+          will also stop the scene when it turns up in ordinary prose. */}
+      {ordinary ? (
+        <p className="text-muted-foreground text-xs">
+          An ordinary word also stops the scene when you write it in the story itself.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function TraceRows({ lines, included }: { lines: LorebookTraceLine[]; included: boolean }) {
   const rows = lines.filter((line) => line.included === included);
   if (rows.length === 0) return null;
@@ -179,17 +238,7 @@ function TraceRows({ lines, included }: { lines: LorebookTraceLine[]; included: 
   );
 }
 
-/**
- * What the last send did with the attached skills.
- *
- * Every non-empty outcome is listed. A skill that quietly failed to reach the
- * prompt reads as the character losing its voice, and the user has no other
- * place to find out why.
- */
 function SkillRows({ selection }: { selection: SkillSelection }) {
-  // One row per attached name. `truncated` names are also in `injections` —
-  // they reached the prompt, just not whole — so the cut is a qualifier on that
-  // row rather than a second row contradicting it.
   const cut = new Set(selection.truncated);
   const rows: { name: string; reason: string }[] = [
     ...selection.injections.map((entry) => ({
@@ -217,14 +266,6 @@ function SkillRows({ selection }: { selection: SkillSelection }) {
   );
 }
 
-/**
- * Per-conversation roleplay configuration.
- *
- * Everything here applies to the next send *and* to a regenerate of the reply
- * already on screen, which is stated in the panel rather than left to be
- * discovered: two swipe alternatives of the same turn can otherwise differ for
- * reasons the swipe counter gives no hint of.
- */
 export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
   const resolved = resolveSessionSettings(props.settings);
   const patch = (next: Partial<RoleplaySessionSettings>) => {
@@ -341,8 +382,6 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
             </Label>
             <Switch
               id={`skill-${skill.name}`}
-              // A ref that resolved to nothing cannot be switched on, and saying
-              // so beats a toggle that does nothing.
               disabled={Boolean(skill.status)}
               checked={!skill.status && !disabledSkills.has(skill.name)}
               onCheckedChange={(checked) =>
@@ -377,10 +416,6 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
           fallback={LOREBOOK_BUDGET_CHARS}
           onCommit={(value) => patch({ lorebookBudgetChars: value })}
         />
-        {/* Writing guidance has no field of its own — a third number is
-            speculative before anyone has hit the ceiling — but it still counts
-            here, or the total under-reports exactly when the user has
-            over-allocated. */}
         <p className="text-muted-foreground text-xs tabular-nums">
           {budgetTotal} of {COMBINED_SYSTEM_BUDGET_CHARS} characters claimed before the character itself, including{" "}
           {SKILL_BUDGET_CHARS} for writing guidance.
@@ -409,6 +444,72 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
             if (promptDraft !== resolved.systemPrompt) patch({ systemPrompt: promptDraft });
           }}
         />
+      </Section>
+
+      <Separator />
+
+      <Section
+        title="Safety"
+        hint="The safeword stops the scene for this conversation. It is matched anywhere in a message, including mid-sentence and inside an aside."
+      >
+        {resolved.deEscalated ? (
+          <div className="border-amber-6 bg-amber-2 flex flex-col gap-2 rounded-md border p-3">
+            <p className="text-amber-11 text-xs">
+              The scene is paused. Replies stay out of character and nothing can change the scene until you start it
+              again.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="self-start"
+              disabled={props.saving}
+              // The only way back. Deliberately not a phrase the model can
+              // produce, and deliberately not cleared by the next send: a model
+              // that ignored the de-escalation instruction would otherwise
+              // resume the scene one turn after the user stopped it.
+              onClick={() => patch({ deEscalated: false })}
+            >
+              Start the scene again
+            </Button>
+          </div>
+        ) : null}
+        <SafewordField
+          value={props.settings.safeword}
+          saving={props.saving}
+          onCommit={(value) => patch({ safeword: value })}
+        />
+        {props.nsfw ? (
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="rp-intensity" className="text-sm font-normal">
+              How far scenes go
+            </Label>
+            <Select
+              value={String(resolved.intensity)}
+              onValueChange={(value) => {
+                const level = Number(value);
+                if (Number.isFinite(level)) patch({ intensity: level });
+              }}
+              disabled={props.saving}
+            >
+              <SelectTrigger id="rp-intensity" className="w-full" aria-label="How far scenes go">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {SCENE_INTENSITY_LEVELS.map((level, index) => (
+                    <SelectItem key={level} value={String(index)}>
+                      {SCENE_INTENSITY_LABELS[level]?.label ?? level}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <p className="text-muted-foreground text-xs">
+              {SCENE_INTENSITY_LABELS[SCENE_INTENSITY_LEVELS[resolved.intensity] ?? ""]?.hint ?? ""}
+            </p>
+          </div>
+        ) : null}
       </Section>
 
       <Separator />
@@ -457,7 +558,15 @@ export function SessionSettingsPanel(props: SessionSettingsPanelProps) {
           size="sm"
           disabled={props.saving}
           onClick={() =>
-            props.onChangeSettings({ disabledLorebookIds: [], disabledSkillNames: [], systemPrompt: "" })
+            props.onChangeSettings({
+              disabledLorebookIds: [],
+              disabledSkillNames: [],
+              systemPrompt: "",
+              // Carried through the reset. A paused scene is not a setting the
+              // user has drifted away from — it is a thing they asked for, and
+              // "reset to defaults" is not the sentence that undoes it.
+              ...(resolved.deEscalated ? { deEscalated: true } : {}),
+            })
           }
         >
           Reset to defaults

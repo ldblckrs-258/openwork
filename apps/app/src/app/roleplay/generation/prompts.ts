@@ -11,10 +11,6 @@ import type { InterviewQuestion } from "./parse-generated.js";
  * `tools: {"*": false}` — rather than behind a second, parallel one that could
  * drift away from it. `roleplayPromptOptions` is the only way either request is
  * built, and it takes no tool map.
- *
- * The prompt documents are markdown files rather than string literals so they can
- * be edited without touching code. Generation quality lives almost entirely in
- * them: when output disappoints, the fix belongs in the `.md`, not here.
  */
 
 export { characterCreatorPrompt, characterInterviewPrompt };
@@ -31,17 +27,6 @@ export function buildInterviewRequest(idea: string): GenerationRequest {
   return { ...roleplayPromptOptions(characterInterviewPrompt), text: ideaBlock(idea) };
 }
 
-/**
- * Build the card-writing call.
- *
- * Interview answers are appended to the idea rather than sent as a second turn:
- * the interview and the generation are separate calls in separate sessions, so
- * there is no shared history for the model to remember them from.
- *
- * Unanswered questions are dropped. A question echoed back with an empty answer
- * reads to the model as "the user declined to have an opinion", which is not
- * what skipping a field means.
- */
 export function buildCreatorRequest(input: { idea: string; answers?: InterviewAnswer[] }): GenerationRequest {
   const answered = (input.answers ?? []).filter((entry) => entry.answer.trim() !== "");
   const sections = [ideaBlock(input.idea)];

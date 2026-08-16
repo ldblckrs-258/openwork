@@ -19,6 +19,8 @@ import {
 import type { GenerationRequest } from "@/app/roleplay/generation/prompts";
 import type { RoleplayOpening } from "@/app/roleplay/greeting";
 import { createBlankLorebook, createLorebookId } from "@/app/roleplay/lorebook";
+import { resolveSafeMode, visibleCharacters } from "@/app/roleplay/safe-mode";
+import { useLocal } from "@/react-app/kernel/local-provider";
 import { importedLorebookRecord, lorebookFromCharacterBook } from "@/app/roleplay/lorebook-import";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/sonner";
@@ -48,11 +50,12 @@ import { PersonaEditor } from "./persona-editor";
 type RoleplayPageProps = {
   endpoint: ResolvedWorkspaceEndpoint | null;
   onStartChat?: (characterId: string, personaId: string, opening: RoleplayOpening) => Promise<void>;
-  /** Runs one generation call. Absent when no workspace engine is reachable. */
   onRunGeneration?: (request: GenerationRequest) => Promise<string>;
 };
 
 const FALLBACK_PERSONA: RoleplayPersona = { name: "", description: "" };
+
+const EMPTY_CHARACTERS: RoleplayCharacterRecord[] = [];
 
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
@@ -60,6 +63,10 @@ function randomSuffix(): string {
 
 export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: RoleplayPageProps) {
   const characters = useRoleplayCharacters(endpoint);
+  const local = useLocal();
+  const allCharacters = characters.data ?? EMPTY_CHARACTERS;
+  const safeMode = resolveSafeMode(local.prefs.roleplaySafeMode, allCharacters);
+  const shownCharacters = visibleCharacters(allCharacters, safeMode);
   const personas = useRoleplayPersonas(endpoint);
   const workspaceSkills = useWorkspaceSkills(endpoint);
   const saveCharacter = useSaveRoleplayCharacter(endpoint);
@@ -77,11 +84,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
   const [editingLorebook, setEditingLorebook] = React.useState<RoleplayLorebookRecord | null>(null);
   const [importingLorebook, setImportingLorebook] = React.useState(false);
   const [tab, setTab] = React.useState("characters");
-  /**
-   * A lorebook that arrived inside an imported card, held until the character it
-   * belongs to is actually saved. Writing it earlier would leave a world attached
-   * to a character the user then abandoned in the editor.
-   */
   const [pendingLorebook, setPendingLorebook] = React.useState<RoleplayLorebookRecord | null>(null);
   const [remembering, setRemembering] = React.useState<RoleplayCharacterRecord | null>(null);
   const [reviewingRevisions, setReviewingRevisions] = React.useState<RoleplayCharacterRecord | null>(null);
@@ -98,12 +100,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
 
   const characterCount = characters.data?.length ?? 0;
   const lorebookCount = lorebooks.data?.length ?? 0;
-  /**
-   * Attached-book counts, computed once for the whole list.
-   *
-   * Per-row filtering would rescan every book for every character, and a library
-   * of a few hundred of each is an ordinary import away.
-   */
   const lorebookCounts = React.useMemo(() => {
     const counts: Record<string, number> = {};
     for (const book of lorebooks.data ?? []) {
@@ -157,6 +153,7 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         character={editing}
         persona={personaRecord.persona}
         saving={saveCharacter.isPending}
+        safeMode={safeMode}
         skills={workspaceSkills.data ?? []}
         endpoint={endpoint}
         onCancel={() => setEditing(null)}
@@ -213,8 +210,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
       <LorebookImport
         onImported={(lorebook, losses) => {
           setImportingLorebook(false);
-          // Straight into the editor, unsaved, so the user attaches it to a
-          // character before it can do anything.
           setEditingLorebook(lorebook);
           if (losses.length > 0) {
             toast.warning(`Imported ${lorebook.name} with changes`, {
@@ -236,8 +231,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
         onImported={(character, losses) => {
           setImporting(false);
           setEditing(character);
-          // A card's own lorebook becomes a library book attached to it, rather
-          // than staying inside the card where nothing would ever match it.
           const book = character.card.data.character_book;
           setPendingLorebook(
             book && book.entries.length > 0
@@ -253,9 +246,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
                 )
               : null,
           );
-          // Surfaced once, here, rather than inside the editor: the losses are
-          // about the file that was read, and by the time the user saves they
-          // are looking at their own card.
           if (losses.length > 0) {
             toast.warning(`Imported ${character.card.data.name || "character"} with changes`, {
               description: losses.join(" "),
@@ -274,8 +264,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
     return (
       <CharacterGenerate
         onRun={onRunGeneration}
-        // Straight into the editor, unsaved. The editor's own save is the only
-        // thing that persists a generated character.
         onGenerated={(character) => {
           setGenerating(false);
           setEditing(character);
@@ -299,10 +287,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
             Lorebooks
             <span className="text-muted-foreground text-xs tabular-nums">{lorebookCount}</span>
           </TabsTrigger>
-          {/*
-            Persona carries no count on purpose: there is exactly one, and a "1"
-            beside it would read as a list the user could add to.
-          */}
           <TabsTrigger value="persona" className="flex-none">
             <UserRound />
             Persona
@@ -311,8 +295,11 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
 
         <TabsContent value="characters" className="flex flex-col gap-4">
           <CharacterList
-            characters={characters.data ?? []}
+            characters={shownCharacters}
             loading={characters.isLoading}
+            safeMode={safeMode}
+            hiddenCount={allCharacters.length - shownCharacters.length}
+            onChangeSafeMode={(next) => local.setPrefs((previous) => ({ ...previous, roleplaySafeMode: next }))}
             lorebookCounts={lorebookCounts}
             onCreate={() =>
               setEditing(createBlankCharacter(createCharacterId(Date.now(), randomSuffix()), Date.now()))
@@ -326,9 +313,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
             onStartChat={
               onStartChat
                 ? (character, opening) => {
-                    // A character with no name compiles the fallback word "Character"
-                    // into its own description, so the editor blocks that save; a
-                    // chat cannot reach that state through the library.
                     void onStartChat(character.id, personaRecord.id, opening).catch((error: unknown) =>
                       toast.error(error instanceof Error ? error.message : "Could not start the chat"),
                     );
@@ -343,8 +327,6 @@ export function RoleplayPage({ endpoint, onStartChat, onRunGeneration }: Rolepla
             }
             onDelete={(character) => {
               deleteCharacter.mutate(character.id, {
-                // Deleting tombstones the character so conversations that used it stay
-                // readable; the library simply stops listing it.
                 onSuccess: () => toast.success(`${character.card.data.name || "Character"} deleted`),
                 onError: (error: unknown) =>
                   toast.error(error instanceof Error ? error.message : "Could not delete the character"),

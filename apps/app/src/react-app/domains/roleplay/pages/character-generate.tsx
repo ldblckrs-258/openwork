@@ -23,9 +23,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 
 type CharacterGenerateProps = {
-  /** Runs one model call behind the roleplay tool boundary and returns its text. */
   onRun: (request: GenerationRequest) => Promise<string>;
-  /** Hands the result to the editor. Nothing is saved here. */
   onGenerated: (character: RoleplayCharacterRecord) => void;
   onCancel: () => void;
 };
@@ -36,14 +34,6 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-/**
- * Generate a character from a sentence.
- *
- * This page never writes to the store. A finished generation is handed to the
- * Phase 4 editor as an unsaved record, so the review step is the same editor the
- * user would have filled in by hand — and a generation they dislike is discarded
- * by cancelling, not by deleting a character that was already persisted.
- */
 export function CharacterGenerate({ onRun, onGenerated, onCancel }: CharacterGenerateProps) {
   const [idea, setIdea] = React.useState("");
   const [stage, setStage] = React.useState<Stage>("idea");
@@ -82,9 +72,6 @@ export function CharacterGenerate({ onRun, onGenerated, onCancel }: CharacterGen
       });
       const parsed = parseGeneratedCard(await onRun(request));
       if (!parsed.ok) {
-        // Rejected rather than partially salvaged: a card assembled from whatever
-        // fields survived would reach the editor looking finished while missing
-        // the parts that carry the character.
         setError(`The character came back unreadable. ${parsed.error}`);
         return;
       }

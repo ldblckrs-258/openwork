@@ -25,8 +25,6 @@ import {
 
 describe("reading chunks", () => {
   test("a fixture built from RFC 2083 is read back chunk for chunk", () => {
-    // The fixtures are written by an independent implementation. Agreement here
-    // is the cross-check that a round trip through our own encoder cannot give.
     const read = readPngChunks(cardPng(SAMPLE_CARD_V2));
 
     expect(read.ok).toBe(true);
@@ -50,8 +48,6 @@ describe("reading chunks", () => {
   });
 
   test("a corrupted chunk is rejected rather than decoded", () => {
-    // A card decoded out of corrupt bytes is worse than a refusal: it imports as
-    // a character whose text is quietly wrong.
     const read = readPngChunks(corruptCrcPng());
 
     expect(read.ok).toBe(false);
@@ -77,9 +73,6 @@ describe("decoding a card", () => {
   });
 
   test("ccv3 wins when a card ships both chunks", () => {
-    // SPEC_V3: an app detecting both SHOULD use ccv3. Dual-chunk files are the
-    // norm, so picking the wrong one would silently drop the nickname on most
-    // real cards rather than on rare ones.
     const decoded = decodeCardFromPng(dualChunkPng(SAMPLE_CARD_V2, SAMPLE_CARD_V3));
 
     expect(decoded.ok).toBe(true);
@@ -89,8 +82,6 @@ describe("decoding a card", () => {
   });
 
   test("base64 wrapped at 64 columns still decodes", () => {
-    // Illegal inside a tEXt value and common anyway, because CLI tools and naive
-    // encoders wrap by default.
     const decoded = decodeCardFromPng(wrappedBase64Png());
 
     expect(decoded.ok).toBe(true);
@@ -105,8 +96,6 @@ describe("decoding a card", () => {
   });
 
   test("a card stored only in a compressed chunk names that as the reason", () => {
-    // Distinct from "no card": the data is there and readable by other apps. A
-    // generic parse error would send the user hunting for a corrupt file.
     const decoded = decodeCardFromPng(compressedCardPng());
 
     expect(decoded.ok).toBe(false);
@@ -125,8 +114,6 @@ describe("the absent decompression path", () => {
       fileURLToPath(new URL("../../../apps/app/src/app/roleplay/png-codec.ts", import.meta.url)),
       "utf8",
     );
-    // Comments stripped: the file explains at length why there is no inflate
-    // path, and matching that prose would make this pass or fail on wording.
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 
     expect(code).toContain("readPngChunks");
@@ -138,8 +125,6 @@ describe("the absent decompression path", () => {
 
 describe("encoding a card", () => {
   test("both chunks are written, so one file works in V2-only and V3-aware apps", () => {
-    // What SillyTavern does. A single-chunk export would make the user choose a
-    // format they have no way to reason about.
     const encoded = encodeCardToPng(strippedPng(), SAMPLE_CARD_V2, SAMPLE_CARD_V3);
 
     expect(encoded.ok).toBe(true);
@@ -149,9 +134,6 @@ describe("encoding a card", () => {
   });
 
   test("the payload is base64 of the UTF-8 JSON, read back by an independent decoder", () => {
-    // The interoperability contract, checked without our own decoder in the loop.
-    // A checked-in file produced by SillyTavern itself would be stronger evidence;
-    // this is the automatable half of it.
     const encoded = encodeCardToPng(strippedPng(), SAMPLE_CARD_V2, SAMPLE_CARD_V3);
     expect(encoded.ok).toBe(true);
     if (!encoded.ok) return;
@@ -160,8 +142,6 @@ describe("encoding a card", () => {
   });
 
   test("card chunks land before IEND and the image chunks keep their order", () => {
-    // tEXt may legally sit anywhere after IHDR, but IDAT runs must stay adjacent
-    // and some strict decoders enforce it.
     const encoded = encodeCardToPng(strippedPng(), SAMPLE_CARD_V2, SAMPLE_CARD_V3);
     expect(encoded.ok).toBe(true);
     if (!encoded.ok) return;
@@ -173,8 +153,6 @@ describe("encoding a card", () => {
   });
 
   test("re-exporting replaces the old card instead of stacking a second one", () => {
-    // Two chara chunks is not a merge, it is an ambiguity: which one a reader
-    // picks is undefined, so an edited card could import as its previous version.
     const once = encodeCardToPng(cardPng(SAMPLE_CARD_V2), SAMPLE_CARD_V2, SAMPLE_CARD_V3);
     expect(once.ok).toBe(true);
     if (!once.ok) return;

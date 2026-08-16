@@ -4,6 +4,7 @@ import type {
   RoleplayCharacterRecord,
   RoleplayPersona,
 } from "@openwork/types/roleplay";
+import { initialSceneState, normalizeHardLimits } from "@openwork/types/roleplay";
 import { Plus, Trash2 } from "lucide-react";
 import * as React from "react";
 
@@ -21,18 +22,28 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { CharacterExport } from "../components/character-export";
 import { CompiledPromptDebug } from "../components/compiled-prompt-debug";
 import { ExampleDialogueEditor } from "../components/example-dialogue-editor";
+import { HardLimitsEditor } from "../components/hard-limits-editor";
+import { SceneRecordEditor } from "../components/scene-record-editor";
 
 type CharacterEditorProps = {
   character: RoleplayCharacterRecord;
   persona: RoleplayPersona;
   saving: boolean;
-  /** Project and global skills, as `listSkills` resolved them. */
+  /**
+   * Hides the adult half of the editor.
+   *
+   * It hides and never edits: a character already marked adult keeps the flag,
+   * its records, and its preferred model while safe mode is on, and gets them
+   * back untouched when it goes off. Saving through a hidden control is the one
+   * thing this must not do.
+   */
+  safeMode: boolean;
   skills: OpenworkSkillItem[];
-  /** Reads the bodies of the attached skills, so the editor can size them. */
   endpoint: ResolvedWorkspaceEndpoint | null;
   onSave: (character: RoleplayCharacterRecord) => void;
   onCancel: () => void;
@@ -51,6 +62,7 @@ export function CharacterEditor({
   character,
   persona,
   saving,
+  safeMode,
   skills,
   endpoint,
   onSave,
@@ -66,12 +78,6 @@ export function CharacterEditor({
   const data = draft.card.data;
 
   const attached = draft.attachedSkills;
-  /**
-   * What the next turn would actually inject, run through the same function the
-   * turn runs. The budget fills in attach order and cuts whatever straddles the
-   * boundary, so a large skill attached first can leave a later one nothing —
-   * shown here rather than discovered after a send, in the diagnostics panel.
-   */
   const attachedBodies = useAttachedSkillBodies(endpoint, attached);
   const selection = React.useMemo(
     () => selectSkillInjections(attachedBodies.skills),
@@ -80,22 +86,7 @@ export function CharacterEditor({
   const injectedChars = new Map(selection.injections.map((entry) => [entry.name, entry.body.length]));
   const cutNames = new Set(selection.truncated);
   const droppedNames = new Set(selection.dropped);
-  /**
-   * Refs the body read could not resolve, checked before any size is shown.
-   *
-   * The list below comes from `useWorkspaceSkills`, cached separately from the
-   * body reads, so it can still be serving a name whose file has since been
-   * deleted. Without this the row falls through to `?? 0` and reads "0 chars" —
-   * a plausible number for a skill that does not exist, on the one row that
-   * exists to say what actually reaches the prompt.
-   */
   const unresolvedNames = new Set([...selection.unresolved, ...selection.shadowed]);
-  /**
-   * A ref is attached by name *and* scope, so an attached global skill that a
-   * project one later shadows shows as attached and reports as unresolved on the
-   * next turn — rather than silently swapping which file the character writes
-   * under.
-   */
   const isAttached = (skill: OpenworkSkillItem) =>
     attached.some((ref) => ref.name === skill.name && ref.scope === skill.scope);
   const attachedElsewhere = attached.filter(
@@ -112,12 +103,19 @@ export function CharacterEditor({
       updatedAt: Date.now(),
     }));
 
+  const sceneTypeErrors = errors.filter((error) => error.field.startsWith("sceneRecords."));
+
   const submit = () => {
     const found = validateCharacter(draft);
     setErrors(found);
-    // Surfacing field-level errors rather than failing the save silently: a card
-    // that vanishes on save with no explanation is the worst outcome here.
-    if (found.length === 0) onSave(draft);
+    if (found.length !== 0) return;
+    const model = draft.preferredModel;
+    const preferredModel = model && model.providerID.trim() && model.modelID.trim() ? model : undefined;
+    onSave({
+      ...draft,
+      hardLimits: normalizeHardLimits(draft.hardLimits),
+      ...(preferredModel ? { preferredModel } : { preferredModel: undefined }),
+    });
   };
 
   return (
@@ -265,14 +263,6 @@ export function CharacterEditor({
           disabled
           readOnly
         />
-        {/*
-          Shown disabled rather than hidden. Imported community cards often set
-          this field, and its whole meaning is that it lands after chat history —
-          which this engine cannot do, because the per-prompt system string is
-          appended before history. Hiding it would leave a user wondering why a
-          card behaves differently here; editing it would let them write text that
-          silently never reaches the model.
-        */}
         <p className="text-muted-foreground text-sm">
           Not supported. This engine places the system prompt before chat
           history, so these instructions can never take effect. The text is
@@ -345,9 +335,6 @@ export function CharacterEditor({
               : ""}
           </p>
         ) : null}
-        {/* An attached ref with nothing behind it is shown here rather than
-            dropped from the list, or the only way to detach a deleted or
-            shadowed skill would be to know it was still there. */}
         {attachedElsewhere.length > 0 ? (
           <div className="flex flex-col gap-1">
             <p className="text-amber-11 text-xs">
@@ -387,11 +374,129 @@ export function CharacterEditor({
 
       <Separator />
 
-      <CompiledPromptDebug character={draft} persona={persona} skills={selection.injections} />
+      <section className="flex flex-col gap-4">
+        <HardLimitsEditor
+          limits={draft.hardLimits}
+          onChange={(hardLimits) => setDraft((current) => ({ ...current, hardLimits, updatedAt: Date.now() }))}
+        />
+      </section>
+
+      <Separator />
+
+      {/* The whole adult section, switch included, is hidden rather than
+          disabled while safe mode is on. A disabled switch still says what the
+          character is, which is the one thing safe mode exists to keep off the
+          screen. Nothing here is cleared: turning safe mode off brings the
+          section back exactly as it was. */}
+      {safeMode ? null : (
+      <>
+      <section className="flex flex-col gap-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-medium">Explicit scene</h3>
+            <p className="text-muted-foreground text-sm">
+              Lets this character track what the scene is doing — clothing, position, anything that changes — and
+              update it as it writes.
+            </p>
+          </div>
+          <Switch
+            aria-label="Explicit scene"
+            checked={draft.nsfw}
+            onCheckedChange={(checked) =>
+              setDraft((current) => ({ ...current, nsfw: checked === true, updatedAt: Date.now() }))
+            }
+          />
+        </div>
+
+        {draft.nsfw ? (
+          <>
+            <SceneRecordEditor
+              records={draft.sceneRecords}
+              onChange={(sceneRecords) => setDraft((current) => ({ ...current, sceneRecords, updatedAt: Date.now() }))}
+            />
+            {sceneTypeErrors.map((error) => (
+              <FieldError key={error.field} message={error.message} />
+            ))}
+          </>
+        ) : draft.sceneRecords.length > 0 ? (
+          <p className="text-muted-foreground text-sm">
+            {draft.sceneRecords.length} record{draft.sceneRecords.length === 1 ? "" : "s"} kept. Turn this back on to
+            edit them.
+          </p>
+        ) : null}
+
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label htmlFor="rp-preferred-provider">Preferred model</Label>
+              <p className="text-muted-foreground text-sm">
+                Used when a conversation has not picked its own. Hosted providers refuse this kind of scene, so a
+                character with nowhere to run reads as broken rather than as blocked.
+              </p>
+            </div>
+            {draft.preferredModel ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  setDraft((current) => {
+                    const { preferredModel: _cleared, ...rest } = current;
+                    return { ...rest, updatedAt: Date.now() };
+                  })
+                }
+              >
+                Clear
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              id="rp-preferred-provider"
+              placeholder="Provider id"
+              value={draft.preferredModel?.providerID ?? ""}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  preferredModel: {
+                    providerID: event.target.value,
+                    modelID: current.preferredModel?.modelID ?? "",
+                  },
+                  updatedAt: Date.now(),
+                }))
+              }
+            />
+            <Input
+              aria-label="Model id"
+              placeholder="Model id"
+              value={draft.preferredModel?.modelID ?? ""}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  preferredModel: {
+                    providerID: current.preferredModel?.providerID ?? "",
+                    modelID: event.target.value,
+                  },
+                  updatedAt: Date.now(),
+                }))
+              }
+            />
+          </div>
+        </div>
+      </section>
+
+      <Separator />
+      </>
+      )}
+
+      <CompiledPromptDebug
+        character={draft}
+        persona={persona}
+        skills={selection.injections}
+        sceneState={initialSceneState(draft.sceneRecords, draft.updatedAt)}
+      />
 
       <div className="flex items-center justify-between gap-2">
-        {/* Exports the draft on screen, not the stored record: what the user is
-            looking at is what they mean by "this character". */}
         <CharacterExport character={draft} />
         <div className="flex items-center gap-2">
         <Button type="button" variant="ghost" onClick={onCancel}>

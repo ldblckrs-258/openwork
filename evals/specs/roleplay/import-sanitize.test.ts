@@ -36,6 +36,9 @@ function recordOf(card: RoleplayCharacterRecord["card"], overrides: Partial<Role
     charSubstitutionName: card.data.name,
     source: "imported",
     attachedSkills: [],
+    nsfw: false,
+    sceneRecords: [],
+    hardLimits: [],
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
@@ -84,8 +87,6 @@ describe("the import gate", () => {
   });
 
   test("the file picker routes by signature, not by what the file is named", () => {
-    // A card saved as `character.txt` still imports, and a JSON file named `.png`
-    // does not fail with a PNG error the user cannot act on.
     const asPng = importCardFromFile(cardPng(SAMPLE_CARD_V2));
     const asJson = importCardFromFile(jsonBytes(SAMPLE_CARD_V2));
 
@@ -109,8 +110,6 @@ describe("the import gate", () => {
 
 describe("V3 degradation", () => {
   test("a V3 card imports and names the fields it lost", () => {
-    // Losing data quietly is the failure mode users report as "the card works
-    // differently here". The report is what makes that a decision instead.
     const result = importCardFromPng(cardPng(SAMPLE_CARD_V3, "ccv3"));
 
     expect(result.ok).toBe(true);
@@ -130,8 +129,6 @@ describe("V3 degradation", () => {
   });
 
   test("a clean V2 import reports no losses at all", () => {
-    // Without this the loss report is unfalsifiable: a UI that always shows
-    // something teaches users to dismiss it.
     expect(describeLosses({
       sourceSpec: "chara_card_v2",
       charSubstitutionName: "Aria",
@@ -161,13 +158,10 @@ describe("malformed input", () => {
       expect(result.message.length, label).toBeGreaterThan(10);
       messages.add(result.message);
     }
-    // Distinct messages, not one generic failure wearing seven hats.
     expect(messages.size).toBe(cases.length);
   });
 
   test("a re-hosted image explains that the host stripped the card", () => {
-    // The most common real complaint. "Invalid file" would send the user back to
-    // the same broken download again.
     const result = importCardFromPng(strippedPng());
 
     expect(result.ok).toBe(false);
@@ -198,8 +192,6 @@ describe("export", () => {
   });
 
   test("a PNG export round-trips through the other app's reader", () => {
-    // Read back by the fixture decoder rather than our own, so this says
-    // something about interoperability rather than about internal consistency.
     const record = recordOf(SAMPLE_CARD_V2 as RoleplayCharacterRecord["card"]);
     const exported = exportCardPng(record, strippedPng());
 
@@ -210,8 +202,6 @@ describe("export", () => {
   });
 
   test("the V3 chunk carries the nickname so a {{char}} override survives a round trip", () => {
-    // The one V3 field this app keeps. Writing it back is the difference between
-    // exporting a V3 card and exporting a downgrade of one.
     const record = recordOf(SAMPLE_CARD_V2 as RoleplayCharacterRecord["card"], {
       charSubstitutionName: "The Archivist",
     });
@@ -221,8 +211,6 @@ describe("export", () => {
   });
 
   test("a character whose nickname is just its name writes no nickname", () => {
-    // Inventing one would make every exported card look like it carried a
-    // {{char}} override it never had.
     const v3 = toCardV3(recordOf(SAMPLE_CARD_V2 as RoleplayCharacterRecord["card"])) as { data: { nickname?: string } };
 
     expect(v3.data.nickname).toBeUndefined();

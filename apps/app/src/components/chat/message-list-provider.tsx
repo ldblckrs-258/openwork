@@ -7,7 +7,7 @@ import type {
   ChatToolReconnectResult,
 } from "@/components/tools/error-attribution"
 import type { RoleplayRenderContext } from "@/components/chat/roleplay-text"
-import type { RoleplayTurnRecord } from "@openwork/types/roleplay"
+import type { RoleplaySceneChangeRecord, RoleplayTurnRecord } from "@openwork/types/roleplay"
 import * as React from "react"
 
 /**
@@ -59,7 +59,19 @@ interface MessageListContextValue {
    * markdown.
    */
   roleplay: RoleplayRenderContext | null
+  /**
+   * What each reply changed about the scene, by that reply's message id.
+   *
+   * Empty for ordinary chat sessions and for roleplay sessions that track no
+   * state. A message absent from the map is one nobody recorded changes for,
+   * which is not the same as a reply that changed nothing — so the transcript
+   * renders nothing rather than claiming the scene held still.
+   */
+  sceneChangesByMessage: Map<string, RoleplaySceneChangeRecord[]>
 }
+
+/** A stable identity, so an ordinary chat session does not rebuild the context every render. */
+const EMPTY_SCENE_CHANGES: Map<string, RoleplaySceneChangeRecord[]> = new Map()
 
 const MessageListContext = React.createContext<MessageListContextValue | null>(null)
 
@@ -93,6 +105,7 @@ interface MessageListProviderProps {
   setPrompt: (prompt: string) => void
   roleplaySwipe?: RoleplaySwipeControls | null
   roleplay?: RoleplayRenderContext | null
+  sceneChangesByMessage?: Map<string, RoleplaySceneChangeRecord[]>
 }
 
 export interface DispatchAction {
@@ -121,6 +134,7 @@ export function MessageListProvider({
   onMcpRetry,
   roleplaySwipe = null,
   roleplay = null,
+  sceneChangesByMessage = EMPTY_SCENE_CHANGES,
 }: MessageListProviderProps) {
   const value = React.useMemo(
     () => ({
@@ -142,6 +156,7 @@ export function MessageListProvider({
       onMcpRetry,
       roleplaySwipe,
       roleplay,
+      sceneChangesByMessage,
     }),
     [
       workspaceId,
@@ -162,6 +177,7 @@ export function MessageListProvider({
       onMcpRetry,
       roleplaySwipe,
       roleplay,
+      sceneChangesByMessage,
     ],
   )
 

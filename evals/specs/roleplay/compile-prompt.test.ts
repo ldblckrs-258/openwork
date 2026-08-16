@@ -39,9 +39,6 @@ function compile(overrides: Partial<CharacterCardV2["data"]> = {}, options: Comp
 
 describe("determinism", () => {
   test("identical input compiles to identical bytes", () => {
-    // Swipe replay depends on this: regenerating a turn must reproduce the exact
-    // system string the turn originally ran against, or the character silently
-    // changes between takes.
     const options: CompilePromptOptions = {
       skills: [{ name: "Slow Burn", body: "Let scenes breathe." }],
       lorebook: [{ text: "The ledger is never lent out.", priority: 2 }],
@@ -53,9 +50,6 @@ describe("determinism", () => {
 
 describe("macros inside a skill body", () => {
   test("{{char}} and {{user}} expand, {{original}} stays literal", () => {
-    // Skill bodies run through the ordinary macro context, without `original` —
-    // the same contract every section that is not `system_prompt` has. A style
-    // skill saying "address them as {{user}}" therefore works.
     const output = compile({}, {
       skills: [{ name: "Address {{user}}", body: "{{char}} always calls {{user}} by name. Keep {{original}} intact." }],
     });
@@ -69,14 +63,22 @@ describe("macros inside a skill body", () => {
 describe("composition order", () => {
   test("sections appear in the exported order", () => {
     const output = compile({ system_prompt: "SYSTEM-MARKER" }, {
+      hardLimits: ["LIMIT-MARKER"],
       skills: [{ name: "SKILL-NAME-MARKER", body: "SKILL-BODY-MARKER" }],
       lorebookBefore: [{ text: "LOREBOOK-BEFORE-MARKER" }],
       lorebook: [{ text: "LOREBOOK-MARKER" }],
       memories: [{ text: "MEMORY-MARKER" }],
+      intensity: 2,
+      sceneState: {
+        records: [{ id: "sr_1", type: "clothes", name: "SCENE-MARKER", state: "worn", description: "" }],
+        revision: 0,
+        updatedAt: 0,
+      },
     });
 
     const positions = [
       output.indexOf("SYSTEM-MARKER"),
+      output.indexOf("LIMIT-MARKER"),
       output.indexOf("SKILL-BODY-MARKER"),
       output.indexOf("LOREBOOK-BEFORE-MARKER"),
       output.indexOf("# Aria"),
@@ -86,17 +88,17 @@ describe("composition order", () => {
       output.indexOf("LOREBOOK-MARKER"),
       output.indexOf("MEMORY-MARKER"),
       output.indexOf("# Example Dialogue"),
+      output.indexOf("# Scene Direction"),
+      output.indexOf("SCENE-MARKER"),
     ];
 
     expect(positions).not.toContain(-1);
     expect([...positions].sort((left, right) => left - right)).toEqual(positions);
-    expect(PROMPT_COMPOSITION_ORDER).toHaveLength(positions.length);
+    expect(PROMPT_COMPOSITION_ORDER).toHaveLength(positions.length + 1);
+    expect(PROMPT_COMPOSITION_ORDER.at(-1)).toBe("de_escalation");
   });
 
   test("attached skills sit between the system prompt and the character definition", () => {
-    // A skill is an instruction about *how to write*, the same kind of thing the
-    // system prompt is, so it belongs beside it — and ahead of the card, which
-    // must stay the text closest to chat history.
     const output = compile({ system_prompt: "SYSTEM-MARKER" }, {
       skills: [{ name: "Slow Burn", body: "Let scenes breathe." }],
     });
@@ -124,12 +126,6 @@ describe("composition order", () => {
 
 describe("post_history_instructions is unsupportable", () => {
   test("post_history_instructions never reaches the system string", () => {
-    // The field's whole meaning is that it lands after chat history. The engine
-    // appends `system` to the system message at index 0, before all history —
-    // proven at the wire level in reports/tool-denial-spike.md — so the front is
-    // the only place it could go. Emitting it would silently relocate it and
-    // change character behavior in a way users would blame on the model.
-    // Absent and reported beats present and misplaced.
     const output = compile({ post_history_instructions: "PHI-MARKER" });
     expect(output).not.toContain("PHI-MARKER");
   });
@@ -186,8 +182,6 @@ describe("macros", () => {
 
 describe("shared contextual injection budget", () => {
   test("lorebook and memories are ranked against one ceiling, not two", () => {
-    // Two independent budgets sum to a prompt with no room for the character.
-    // Lowest priority is discarded first per the Card V2 rule.
     const output = compile({}, {
       budgetChars: 40,
       lorebook: [{ text: "KEEP-LOREBOOK", priority: 10 }],

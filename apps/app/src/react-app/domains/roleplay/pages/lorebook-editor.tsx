@@ -48,19 +48,6 @@ function numberOrUndefined(value: string): number | undefined {
   return value.trim() === "" || Number.isNaN(parsed) ? undefined : parsed;
 }
 
-/**
- * Edit one world.
- *
- * Entries are picked from a list rather than all rendered at once: imported
- * books routinely run to a hundred entries, and a page of a hundred open forms
- * is unusable and slow.
- *
- * The activation preview at the bottom is the reason the matcher returns a
- * trace. Lorebooks fail silently everywhere they exist — an entry does not fire
- * and the author has no way to tell whether the key missed, the entry was
- * disabled, or the budget evicted it. Here they can type a line and read the
- * answer.
- */
 export function LorebookEditor({ lorebook, characters, saving, onSave, onCancel }: LorebookEditorProps) {
   const [draft, setDraft] = React.useState(lorebook);
   const [selectedUid, setSelectedUid] = React.useState<string | null>(lorebook.entries[0]?.uid ?? null);

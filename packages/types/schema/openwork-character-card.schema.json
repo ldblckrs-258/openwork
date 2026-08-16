@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ustaezav/openwork/main/packages/types/schema/openwork-character-card.schema.json",
+  "title": "OpenWork character card",
+  "description": "Interchange contract for a character card OpenWork can import or export. A Character Card V2 envelope, plus the OpenWork vendor block under `data.extensions.openwork` that carries the adult-content flag, the opening scene, and the character's hard limits. Two rules this schema cannot express: a card file must be at most 2000000 bytes, and a card may also arrive embedded in an uncompressed PNG `tEXt` chunk keyed `chara`, base64-encoded, in which case this schema describes the decoded payload.",
+  "type": "object",
+  "required": ["spec", "spec_version", "data"],
+  "properties": {
+    "spec": {
+      "const": "chara_card_v2",
+      "description": "A `chara_card_v3` card is accepted on import and narrowed to V2; the fields V3 adds and this app does not keep are reported to the user as losses rather than dropped silently. Export writes V2, and V3 alongside it in PNG."
+    },
+    "spec_version": { "type": "string" },
+    "data": { "$ref": "#/$defs/cardData" }
+  },
+  "additionalProperties": {
+    "description": "Ignored. Nothing outside `data` is read, so a card that sets a top-level `nsfw` or `sceneRecords` is setting nothing."
+  },
+  "$defs": {
+    "cardData": {
+      "type": "object",
+      "required": ["name", "description", "personality", "scenario", "first_mes", "mes_example"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 256 },
+        "description": { "type": "string", "maxLength": 32000 },
+        "personality": { "type": "string", "maxLength": 32000 },
+        "scenario": { "type": "string", "maxLength": 32000 },
+        "first_mes": { "type": "string", "maxLength": 32000 },
+        "mes_example": {
+          "type": "string",
+          "maxLength": 64000,
+          "description": "Exchanges separated by `<START>`. `{{char}}` and `{{user}}` expand at compile time."
+        },
+        "creator_notes": { "type": "string", "maxLength": 8000, "description": "Never compiled into a prompt." },
+        "system_prompt": {
+          "type": "string",
+          "maxLength": 32000,
+          "description": "Replaces the app default. `{{original}}` recovers it."
+        },
+        "post_history_instructions": {
+          "type": "string",
+          "maxLength": 32000,
+          "description": "Preserved on export and never compiled into a prompt. The engine appends the per-turn system string before all chat history, so a field whose entire meaning is that it lands after history cannot be honoured. Absent and reported beats present and misplaced."
+        },
+        "alternate_greetings": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "type": "string", "maxLength": 32000 }
+        },
+        "tags": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 64 } },
+        "creator": { "type": "string", "maxLength": 256 },
+        "character_version": { "type": "string", "maxLength": 64 },
+        "character_book": { "$ref": "#/$defs/characterBook" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "additionalProperties": true
+    },
+
+    "characterBook": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "scan_depth": { "type": "number" },
+        "token_budget": { "type": "number" },
+        "recursive_scanning": { "type": "boolean" },
+        "extensions": { "$ref": "#/$defs/extensions" },
+        "entries": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/characterBookEntry" } }
+      },
+      "additionalProperties": true
+    },
+
+    "characterBookEntry": {
+      "type": "object",
+      "required": ["keys", "content"],
+      "properties": {
+        "keys": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 256 } },
+        "content": { "type": "string", "maxLength": 32000 },
+        "enabled": { "type": "boolean", "default": true },
+        "insertion_order": { "type": "number", "default": 0 },
+        "case_sensitive": { "type": "boolean" },
+        "name": { "type": "string" },
+        "priority": { "type": "number" },
+        "id": { "type": "number" },
+        "comment": { "type": "string" },
+        "selective": { "type": "boolean" },
+        "secondary_keys": { "type": "array", "items": { "type": "string" } },
+        "constant": { "type": "boolean" },
+        "position": { "enum": ["before_char", "after_char"] },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "additionalProperties": true
+    },
+
+    "extensions": {
+      "type": "object",
+      "description": "Vendor data. Only the `openwork` namespace is kept on import; every other namespace is removed, and the removal is reported to the user rather than done silently. A card is a stranger's file, and an unknown vendor block is text that would otherwise ride into the app unread.",
+      "properties": {
+        "openwork": { "$ref": "#/$defs/openworkExtension" }
+      },
+      "$ref": "#/$defs/noPrivilegeKeys",
+      "additionalProperties": {
+        "description": "Stripped on import.",
+        "$ref": "#/$defs/safeExtensionValue"
+      }
+    },
+
+    "noPrivilegeKeys": {
+      "description": "A card may not carry engine-privilege keys anywhere in an extension subtree, at any depth. These name a tool, an agent, a model, a permission, or a prompt, and a card that could set one would be choosing what the app runs rather than who the character is. The importer removes them; a conforming producer never writes them.",
+      "propertyNames": {
+        "not": {
+          "enum": [
+            "permission",
+            "tools",
+            "agent",
+            "model",
+            "prompt",
+            "plugin",
+            "mcp",
+            "command",
+            "instructions",
+            "provider",
+            "mode",
+            "temperature",
+            "options",
+            "disable",
+            "__proto__",
+            "constructor",
+            "prototype"
+          ]
+        }
+      }
+    },
+
+    "safeExtensionValue": {
+      "description": "Any JSON value, as long as no object anywhere inside it carries a privilege key. Nesting deeper than 16 levels is truncated on import.",
+      "anyOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/safeExtensionValue" } },
+        {
+          "type": "object",
+          "$ref": "#/$defs/noPrivilegeKeys",
+          "additionalProperties": { "$ref": "#/$defs/safeExtensionValue" }
+        }
+      ]
+    },
+
+    "openworkExtension": {
+      "type": "object",
+      "description": "OpenWork's own block, written on export and applied on import. It is the only vendor namespace the importer keeps, so it is the only place these values survive a round trip. Everything in it is re-normalized on the way in — flattened to single lines, capped, and given fresh ids where needed — because the sanitizer bounds a card's size and strips privilege keys from vendor blocks but does not cap the length or the count of anything inside one.",
+      "properties": {
+        "version": {
+          "const": 1,
+          "description": "This block's shape, versioned separately from the card spec so it can change without claiming to be a new card format. Recorded on import but not yet branched on."
+        },
+        "nsfw": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this character tracks explicit scene state. Applied on import, so a shared character arrives configured the way its author built it. The character editor shows it before the character is saved.",
+          "$comment": "Applied by importedOpenworkFields in apps/app/src/app/roleplay/import-export.ts."
+        },
+        "hardLimits": {
+          "type": "array",
+          "maxItems": 24,
+          "items": { "type": "string", "maxLength": 120 },
+          "description": "Content this character must never produce. Applied on import. Entries are flattened to single lines, capped, de-duplicated, and empties dropped; a list longer than the cap is truncated. Note that a card which can write this list can also ship a shorter one than the importer would have chosen, which is why the editor shows it before the character is saved.",
+          "default": []
+        },
+        "sceneRecords": {
+          "type": "array",
+          "maxItems": 40,
+          "items": { "$ref": "#/$defs/sceneRecord" },
+          "description": "The scene a session opens with, in the order the scene acquires them. Order is meaningful: it survives into the compiled prompt within each type. Applied on import, after the same normalization the app applies to its own records.",
+          "default": []
+        },
+        "attachedSkills": {
+          "description": "Never read on import, whatever a card puts here. A skill ref names a file in the importing workspace, which the card knows nothing about; letting it choose one would let it choose what writing guidance the character runs under.",
+          "not": {}
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "sceneRecord": {
+      "type": "object",
+      "description": "One tracked thing in a scene. `state` and `count` coexist rather than forming a union: a garment usually wants no count, a counter usually wants no state, and a record that wants both costs nothing.",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^sr_[0-9]+$",
+          "description": "Unique within the card. The model addresses records by this id for the whole conversation, so an id is never reused and never reassigned by a rename. On import a missing or duplicated id is replaced with a freshly minted one rather than honoured, so a card cannot choose an id that collides with one the model is given later."
+        },
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,23}$",
+          "description": "An open slug set, not an enum. `clothes`, `pose`, `location`, `climax`, `body_parts` and `toys` are rendered with known labels and in that order; anything else matching the pattern is accepted and rendered in a trailing group. Bounded on both ends because it becomes a heading in the system prompt. A record's type is fixed once created.",
+          "examples": ["clothes", "pose", "location", "climax", "body_parts", "toys"]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The specific thing: \"silk blouse\", \"left wrist\". Empty for singletons like pose or location. The ceiling bounds the store, not the prompt; the prompt budget is applied when the scene section is rendered.",
+          "default": ""
+        },
+        "state": {
+          "type": "string",
+          "maxLength": 600,
+          "description": "Free text: \"worn\", \"removed\", \"kneeling on the rug\". Flattened to a single line and stripped of heading markers on the way in, because it is re-injected into the system message on every later turn.",
+          "default": ""
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99,
+          "description": "For records that count. Absent, not zero, for records that do not — a labelled empty value invites the model to fill it in for the sake of the label."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Authored detail the prompt may use. Trimmed to a preview, and then dropped entirely, before any record is shed for budget.",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

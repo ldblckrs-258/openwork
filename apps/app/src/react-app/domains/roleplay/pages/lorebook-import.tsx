@@ -16,18 +16,10 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
 }
 
-/** A book with no name of its own is named after the file it came from. */
 function nameFromFile(fileName: string): string {
   return fileName.replace(/\.[^.]+$/, "").trim() || "Imported lorebook";
 }
 
-/**
- * Import a world file.
- *
- * The conversion and the sanitizing both happen in `lorebook-import.ts`; this
- * moves bytes and hands the result to the editor unsaved, so a stranger's world
- * is on screen and editable before anything is written.
- */
 export function LorebookImport({ onImported, onCancel }: LorebookImportProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -91,7 +83,6 @@ export function LorebookImport({ onImported, onCancel }: LorebookImportProps) {
         className="hidden"
         onChange={(event) => {
           void accept(event.target.files?.[0]);
-          // Cleared so picking the same file twice after an error fires again.
           event.target.value = "";
         }}
       />

@@ -23,12 +23,6 @@ function formatLabel(format: string | undefined): string | undefined {
   return LOREBOOK_FORMAT_LABELS[format as LorebookImportFormat];
 }
 
-/**
- * Who this book actually reaches.
- *
- * Names, not a count: "3 attached" still leaves the user opening the book to
- * find out whether it reaches the character they are about to play.
- */
 function attachedNames(lorebook: RoleplayLorebookRecord, characters: RoleplayCharacterRecord[]): string[] {
   return lorebook.characterIds
     .map((id) => characters.find((character) => character.id === id))
@@ -36,14 +30,6 @@ function attachedNames(lorebook: RoleplayLorebookRecord, characters: RoleplayCha
     .map((character) => character.card.data.name || "Untitled character");
 }
 
-/**
- * The world library.
- *
- * Each row says the two things that decide whether a book is doing anything: how
- * many entries it holds, and how many characters it is attached to. A book
- * attached to nothing is inert, and that is the most common reason an imported
- * world appears to do nothing at all.
- */
 export function LorebookList({
   lorebooks,
   characters,
@@ -120,11 +106,6 @@ export function LorebookList({
               >
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-medium">{lorebook.name || "Untitled lorebook"}</p>
-                  {/*
-                    An unattached book is the single most common reason an
-                    imported world appears to do nothing, so it is called out
-                    rather than left to be inferred from a missing line.
-                  */}
                   {attached.length === 0 ? <Badge variant="outline">Not attached</Badge> : null}
                 </div>
                 <p className="text-muted-foreground line-clamp-1 text-sm tabular-nums">

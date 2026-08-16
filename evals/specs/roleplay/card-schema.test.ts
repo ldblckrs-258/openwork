@@ -88,9 +88,6 @@ describe("V2 fidelity", () => {
   });
 
   test("extensions are mandatory at book and entry level, defaulting to an empty object", () => {
-    // The spec marks these non-optional. A card that omits them must still
-    // serialize `{}` rather than dropping the key, or a round-trip through this
-    // app silently produces a card that no longer matches the spec.
     const parsed = characterBookSchema.parse({
       entries: [{ keys: ["ledger"], content: "secret", enabled: true, insertion_order: 0 }],
     });
@@ -100,10 +97,6 @@ describe("V2 fidelity", () => {
   });
 
   test("a card shaped like a Chub.ai export parses without error", () => {
-    // Chub's export pipeline is a known source of lossy and oddly-typed cards
-    // (SillyTavern#4312), so the importer must be lenient rather than strict.
-    // NOTE: this fixture is synthesized from the spec, not a real downloaded
-    // card. Fidelity against a genuine Chub export is not proven by this spec.
     const parsed = characterCardV2Schema.parse({
       spec: "chara_card_v2",
       spec_version: "2.0",
@@ -200,8 +193,6 @@ describe("V1 and V3 envelopes", () => {
   });
 
   test("a spec_version above 3.0 is tolerated rather than hard-rejected", () => {
-    // The spec tells apps not to reject unrecognized minor versions; a future
-    // 3.1 card should degrade, not fail at the door.
     const parsed = characterCardV3Schema.safeParse({
       spec: "chara_card_v3",
       spec_version: "3.1",

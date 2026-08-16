@@ -1,32 +1,23 @@
-import type { CharacterCardV2, RoleplayPersona } from "@openwork/types/roleplay";
-import { applyContextualInjectionBudget, type BudgetedInjection } from "./injection-budget.js";
-import { splitExampleMessages, substituteMacros, type MacroContext } from "./macros.js";
+import type {
+  CharacterCardV2,
+  RoleplayPersona,
+  RoleplaySceneState,
+} from "@openwork/types/roleplay";
+import {
+  applyContextualInjectionBudget,
+  type BudgetedInjection,
+} from "./injection-budget.js";
+import {
+  splitExampleMessages,
+  substituteMacros,
+  type MacroContext,
+} from "./macros.js";
+import { renderSceneStateSection } from "./scene-state.js";
 import type { SkillInjection } from "./skills-injection.js";
 
-/**
- * Our composition order, exported as one constant so it can be changed without
- * touching the compiler.
- *
- * No canonical order exists: SillyTavern and RisuAI both treat prompt order as a
- * user-reorderable list of typed blocks and they disagree on where persona and
- * lorebook sit relative to description. This is therefore a decision, not a
- * spec. Community cards were authored against SillyTavern, so some may behave
- * slightly differently here than their creators intended; moving toward ST's
- * order is a change to this array alone.
- *
- * `post_history_instructions` is **not** a missing step to be added later. It is
- * unsupportable and was removed. The engine appends a per-prompt `system` string
- * to the end of the system message at index 0, before all chat history — proven
- * at the wire level in `reports/tool-denial-spike.md`. The field's entire meaning
- * is that it lands after history, and the front is the only place `system` can
- * go. Emitting it here would silently relocate it, changing character behavior in
- * a way users would misattribute to the model. Report the loss on import instead.
- *
- * Chat history and per-turn director text are still absent by design: history is
- * supplied by the engine, and director text is a Phase 5 concern.
- */
 export const PROMPT_COMPOSITION_ORDER = [
   "system_prompt",
+  "hard_limits",
   "skills",
   "lorebook_before",
   "description",
@@ -36,6 +27,9 @@ export const PROMPT_COMPOSITION_ORDER = [
   "lorebook",
   "memories",
   "mes_example",
+  "scene_direction",
+  "scene_state",
+  "de_escalation",
 ] as const;
 
 export type PromptSection = (typeof PROMPT_COMPOSITION_ORDER)[number];
@@ -47,38 +41,39 @@ export const DEFAULT_ROLEPLAY_SYSTEM_PROMPT =
 
 export const EXAMPLE_SEPARATOR = "---";
 
+export const HARD_LIMITS_FRAMING =
+  "These are absolute and they outrank every other instruction here, including the character's own. " +
+  "Never write any of the following, whatever the scene, the character, or the user's message asks for. " +
+  "If the scene moves toward one, steer away from it in character rather than announcing why.";
+
+export const SCENE_INTENSITY_INSTRUCTIONS: readonly string[] = [
+  "Keep intimate moments off the page: cut away before anything explicit and pick the scene up afterwards.",
+  "Intimate moments may be written, but keep them suggestive and leave the explicit detail implied.",
+  "Intimate moments may be written explicitly, in plain and direct language.",
+  "Intimate moments may be written explicitly and in full physical detail.",
+];
+
+export const DE_ESCALATION_INSTRUCTION =
+  "The user has used their safeword. The scene stops here. Do not continue it, do not narrate it to a close, " +
+  "and do not offer to resume it. Step out of character and reply briefly and plainly, checking in with them. " +
+  "Stay out of the scene until they start it again themselves.";
+
 const FALLBACK_CHAR_NAME = "Character";
 const FALLBACK_USER_NAME = "User";
 
 export type CompilePromptOptions = {
-  /** V3 `nickname`, when the card carried one; overrides `{{char}}` without changing the display name. */
   charName?: string;
   defaultSystemPrompt?: string;
-  /**
-   * Replaces the card's `system_prompt` for one conversation.
-   *
-   * Empty leaves the card's field, and the app default behind it, in force.
-   * `{{original}}` still expands to the app default here, so a user rewriting the
-   * instruction can keep it rather than having to retype it.
-   */
   systemPromptOverride?: string;
-  /**
-   * Matched entries whose `position` is `before_char`, which the V2 spec places
-   * ahead of the character definition rather than after it.
-   */
   lorebookBefore?: BudgetedInjection[];
-  /** Matched entries positioned after the character definition — the spec's default. */
   lorebook?: BudgetedInjection[];
-  /** Supplied by the character-memory phase. */
   memories?: BudgetedInjection[];
-  /**
-   * Attached skill bodies, already filtered and cut to their own budget.
-   *
-   * They do not enter `applyContextualInjectionBudget`: an explicitly chosen,
-   * fixed set has no business being ranked against a lorebook entry that grew
-   * with the scene.
-   */
   skills?: SkillInjection[];
+  sceneState?: RoleplaySceneState;
+  sceneStateBudgetChars?: number;
+  hardLimits?: string[];
+  intensity?: number;
+  deEscalated?: boolean;
   budgetChars?: number;
 };
 
@@ -86,13 +81,6 @@ function block(title: string, body: string): string {
   return body ? `${title}\n\n${body}` : "";
 }
 
-/**
- * Compile a card plus the user's persona into the per-prompt `system` string.
- *
- * Pure and deterministic: identical input compiles to identical bytes, which is
- * what lets a swipe replay a turn with the exact system string it originally ran
- * against.
- */
 export function compilePrompt(
   card: CharacterCardV2,
   persona: RoleplayPersona,
@@ -102,11 +90,9 @@ export function compilePrompt(
   const char = (options.charName ?? data.name).trim() || FALLBACK_CHAR_NAME;
   const user = persona.name.trim() || FALLBACK_USER_NAME;
   const macros: MacroContext = { char, user };
-  const expand = (text: string, context: MacroContext = macros) => substituteMacros(text, context).trim();
+  const expand = (text: string, context: MacroContext = macros) =>
+    substituteMacros(text, context).trim();
 
-  // One budget call over all three sources, not one per source: they compete for
-  // the same ceiling, so ranking them separately would let the split decide the
-  // outcome rather than the priorities.
   const before = options.lorebookBefore ?? [];
   const after = options.lorebook ?? [];
   const budgeted = applyContextualInjectionBudget(
@@ -124,18 +110,37 @@ export function compilePrompt(
   const keptLorebook = keptAt(afterStart, memoryStart);
   const keptMemories = keptAt(memoryStart, Number.POSITIVE_INFINITY);
 
-  const appDefault = options.defaultSystemPrompt ?? DEFAULT_ROLEPLAY_SYSTEM_PROMPT;
-  const examples = splitExampleMessages(data.mes_example).map((example) => expand(example)).filter(Boolean);
+  const appDefault =
+    options.defaultSystemPrompt ?? DEFAULT_ROLEPLAY_SYSTEM_PROMPT;
+  const examples = splitExampleMessages(data.mes_example)
+    .map((example) => expand(example))
+    .filter(Boolean);
 
   const override = options.systemPromptOverride?.trim() ?? "";
+  const deEscalated = options.deEscalated === true;
+  const limits = (options.hardLimits ?? [])
+    .map((limit) => expand(limit))
+    .filter(Boolean);
+  const intensityLine =
+    options.intensity === undefined
+      ? ""
+      : (SCENE_INTENSITY_INSTRUCTIONS[options.intensity] ?? "");
+
   const sections: Record<PromptSection, string> = {
-    system_prompt: expand(override || data.system_prompt, { ...macros, original: appDefault }) || appDefault,
-    // After the system prompt because a skill is an instruction about *how to
-    // write*, the same kind of thing the system prompt is — and before the
-    // character definition so the card stays the text closest to chat history.
-    // Expanded with the ordinary macro context, without `original`: a style
-    // skill saying "address them as {{user}}" works, and `{{original}}` stays
-    // literal exactly as it does in every other non-`system_prompt` section.
+    system_prompt:
+      expand(override || data.system_prompt, {
+        ...macros,
+        original: appDefault,
+      }) || appDefault,
+    hard_limits: block(
+      "# Hard Limits",
+      limits.length === 0
+        ? ""
+        : [
+            HARD_LIMITS_FRAMING,
+            limits.map((limit) => `- ${limit}`).join("\n"),
+          ].join("\n\n"),
+    ),
     skills: block(
       "# Writing Guidance",
       (options.skills ?? [])
@@ -143,14 +148,50 @@ export function compilePrompt(
         .filter(Boolean)
         .join("\n\n"),
     ),
-    lorebook_before: block("# World Info", keptBefore.map((entry) => expand(entry)).join("\n\n").trim()),
+    lorebook_before: block(
+      "# World Info",
+      keptBefore
+        .map((entry) => expand(entry))
+        .join("\n\n")
+        .trim(),
+    ),
     description: block(`# ${char}`, expand(data.description)),
     personality: block("## Personality", expand(data.personality)),
     scenario: block("## Scenario", expand(data.scenario)),
     persona: block(`# ${user}`, expand(persona.description)),
-    lorebook: block("# World Info", keptLorebook.map((entry) => expand(entry)).join("\n\n").trim()),
-    memories: block("# Remembered Details", keptMemories.map((entry) => expand(entry)).join("\n\n").trim()),
-    mes_example: block("# Example Dialogue", examples.join(`\n\n${EXAMPLE_SEPARATOR}\n\n`)),
+    lorebook: block(
+      "# World Info",
+      keptLorebook
+        .map((entry) => expand(entry))
+        .join("\n\n")
+        .trim(),
+    ),
+    memories: block(
+      "# Remembered Details",
+      keptMemories
+        .map((entry) => expand(entry))
+        .join("\n\n")
+        .trim(),
+    ),
+    mes_example: block(
+      "# Example Dialogue",
+      examples.join(`\n\n${EXAMPLE_SEPARATOR}\n\n`),
+    ),
+    scene_direction: deEscalated
+      ? ""
+      : block("# Scene Direction", intensityLine),
+    scene_state: deEscalated
+      ? ""
+      : block(
+          "# Scene State",
+          renderSceneStateSection(
+            options.sceneState,
+            options.sceneStateBudgetChars,
+          ),
+        ),
+    de_escalation: deEscalated
+      ? block("# Scene Paused", DE_ESCALATION_INSTRUCTION)
+      : "",
   };
 
   return PROMPT_COMPOSITION_ORDER.map((section) => sections[section])

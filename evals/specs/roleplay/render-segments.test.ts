@@ -14,18 +14,14 @@ function textOf(text: string, kind: string): string[] {
 
 describe("reading conventions", () => {
   test("speech keeps its quotes", () => {
-    // Colour alone would not survive a copy-paste out of the transcript.
     expect(textOf('She looked up. "You\'re late," she said.', "speech")).toEqual(['"You\'re late,"']);
   });
 
   test("curly quotes read as speech too", () => {
-    // What a model writes when it is being typographically tidy.
     expect(textOf("“You're late,” she said.", "speech")).toEqual(["“You're late,”"]);
   });
 
   test("action drops its asterisks, single or double", () => {
-    // They rendered as italics with no asterisks under the markdown renderer
-    // this replaces; keeping them would read as a regression.
     expect(textOf("*shrugs* and **turns away**", "action")).toEqual(["shrugs", "turns away"]);
   });
 
@@ -36,8 +32,6 @@ describe("reading conventions", () => {
   });
 
   test("an ordinary parenthetical stays narration", () => {
-    // The load-bearing exclusion: prose is full of these, and colouring them as
-    // out-of-character would be wrong far more often than right.
     expect(kinds("She paused (again) before answering.")).toEqual(["narration"]);
   });
 
@@ -53,7 +47,6 @@ describe("reading conventions", () => {
 
 describe("robustness", () => {
   test("an unterminated quote stops at the end of its line", () => {
-    // Otherwise one stray quote recolours every paragraph after it.
     const segments = segmentRoleplayText('"She never finished the\nThe next line is ordinary prose.');
 
     expect(segments.map((segment) => segment.kind)).toEqual(["narration"]);
@@ -74,8 +67,6 @@ describe("robustness", () => {
   });
 
   test("no character of the input is lost or duplicated", () => {
-    // The renderer prints these segments in order, so anything dropped here is
-    // text that silently disappears from the transcript.
     const source = 'Rain. "Come in," *she stepped back* [ooc: brb] (again) **now**';
     const segments = segmentRoleplayText(source);
     const rebuilt = segments
@@ -88,8 +79,6 @@ describe("robustness", () => {
 
 describe("macros", () => {
   test("macros are substituted before the text is split", () => {
-    // Order matters: substituting afterwards would leave `{{user}}` inside a
-    // quoted span untouched.
     const rendered = substituteMacros('"Hello, {{user}}," said {{char}}.', { char: "Aria", user: "Wren" });
 
     expect(textOf(rendered, "speech")).toEqual(['"Hello, Wren,"']);

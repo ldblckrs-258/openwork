@@ -5,6 +5,8 @@ import {
   ChevronDown,
   Copy,
   Drama,
+  Eye,
+  EyeOff,
   History,
   MessageCircle,
   MoreHorizontal,
@@ -39,14 +41,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 type CharacterListProps = {
   characters: RoleplayCharacterRecord[];
   loading: boolean;
-  /** How many lorebooks are attached to each character, keyed by character id. */
+  safeMode: boolean;
+  hiddenCount: number;
+  onChangeSafeMode: (safeMode: boolean) => void;
   lorebookCounts: Record<string, number>;
   onCreate: () => void;
   onOpen: (character: RoleplayCharacterRecord) => void;
   onDuplicate: (character: RoleplayCharacterRecord) => void;
   onDelete: (character: RoleplayCharacterRecord) => void;
   onStartChat?: (character: RoleplayCharacterRecord, opening: RoleplayOpening) => void;
-  /** False when no engine is reachable, which is the only thing a written opening needs. */
   canWriteOpening: boolean;
   onGenerate?: () => void;
   onImport: () => void;
@@ -54,14 +57,6 @@ type CharacterListProps = {
   onOpenRevisions: (character: RoleplayCharacterRecord) => void;
 };
 
-/**
- * What a row says about a character beyond its name.
- *
- * Only facts that change how it behaves in a conversation: attached worlds, and
- * whether the card is still the author's work. A row of counts nobody acts on
- * would be decoration.
- */
-/** One line of an alternate greeting, enough to tell them apart in a menu. */
 function preview(greeting: string): string {
   const line = greeting.trim().split("\n")[0] ?? "";
   return line.length > 56 ? `${line.slice(0, 56)}…` : line;
@@ -78,6 +73,9 @@ function metaLine(character: RoleplayCharacterRecord, lorebooks: number): string
 export function CharacterList({
   characters,
   loading,
+  safeMode,
+  hiddenCount,
+  onChangeSafeMode,
   lorebookCounts,
   onCreate,
   onOpen,
@@ -96,6 +94,26 @@ export function CharacterList({
         <Skeleton className="h-16 w-full" />
         <Skeleton className="h-16 w-full" />
       </div>
+    );
+  }
+
+  if (characters.length === 0 && hiddenCount > 0) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <EyeOff />
+          </EmptyMedia>
+          <EmptyTitle>Safe mode is on</EmptyTitle>
+          <EmptyDescription>
+            {hiddenCount} {hiddenCount === 1 ? "character is" : "characters are"} hidden. Nothing has been deleted.
+          </EmptyDescription>
+        </EmptyHeader>
+        <Button variant="outline" onClick={() => onChangeSafeMode(false)}>
+          <Eye className="size-4" />
+          Show them
+        </Button>
+      </Empty>
     );
   }
 
@@ -136,8 +154,19 @@ export function CharacterList({
       <div className="flex items-center justify-between gap-3">
         <p className="text-muted-foreground text-sm tabular-nums">
           {characters.length} {characters.length === 1 ? "character" : "characters"}
+          {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
         </p>
         <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-pressed={safeMode}
+            title={safeMode ? "Safe mode is on" : "Safe mode is off"}
+            onClick={() => onChangeSafeMode(!safeMode)}
+          >
+            {safeMode ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            Safe mode
+          </Button>
           <Button size="sm" variant="outline" onClick={onImport}>
             <Upload className="size-4" />
             Import
@@ -161,11 +190,6 @@ export function CharacterList({
           const meta = metaLine(character, lorebookCounts[character.id] ?? 0);
           return (
             <li key={character.id} className="hover:bg-accent/40 flex items-center gap-3 p-3">
-              {/*
-                The whole row opens the editor. The two buttons on the right are
-                the only things that do anything else, so a row-wide target costs
-                nothing and saves aiming at a link-sized name.
-              */}
               <button
                 type="button"
                 className="focus-visible:ring-ring/50 min-w-0 flex-1 rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none"
@@ -184,11 +208,6 @@ export function CharacterList({
                     <MessageCircle className="size-4" />
                     Chat
                   </Button>
-                  {/*
-                    A separate trigger rather than a menu the Chat button itself
-                    opens: starting a chat the usual way stays one click, and the
-                    openings sit one click away instead of in front of it.
-                  */}
                   <DropdownMenu>
                     <DropdownMenuTrigger
                       render={
@@ -203,11 +222,6 @@ export function CharacterList({
                       }
                     />
                     <DropdownMenuContent align="end">
-                      {/*
-                        The label is a group part: base-ui throws if it renders
-                        outside a group, which takes the whole renderer down with
-                        it rather than degrading.
-                      */}
                       <DropdownMenuGroup>
                         <DropdownMenuLabel>Open the scene with</DropdownMenuLabel>
                         <DropdownMenuItem onClick={() => onStartChat(character, { kind: "card" })}>
@@ -226,11 +240,6 @@ export function CharacterList({
                             </DropdownMenuItem>
                           ))}
                         <DropdownMenuSeparator />
-                        {/*
-                          The point of this menu. A card's greeting was written for
-                          a first meeting, so once the character remembers things it
-                          opens by re-introducing someone they already know.
-                        */}
                         <DropdownMenuItem
                           disabled={!canWriteOpening}
                           onClick={() => onStartChat(character, { kind: "generate" })}
@@ -244,11 +253,6 @@ export function CharacterList({
                 </div>
               ) : null}
 
-              {/*
-                Five bare icon buttons per row was five unlabelled guesses. One
-                menu names every action and leaves the row's only emphasis on the
-                thing people came here to do.
-              */}
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
